@@ -9,7 +9,8 @@ def main():
     pygame.display.set_caption("Game")
 
     platforms = [Platform(0, 980, 1920, 250, color=(107, 73, 89)), Platform(300, 800, 300, 20), Platform(700, 600, 300, 20), Platform(1100, 400, 300, 20)]
-    players = [Player(375, 285, platforms=platforms), Player(0, 285, platforms=platforms)]
+    player = Player(375, 285, platforms=platforms)
+    player2 = Player(0, 285, platforms=platforms)
 
     # Start network client (connect to local server by default)
     net = NetworkClient('ws://10.3.139.128:8765')
@@ -33,13 +34,13 @@ def main():
                 running = False
 
         keys = pygame.key.get_pressed()
-        dx = [keys[pygame.K_RIGHT] - keys[pygame.K_LEFT], keys[pygame.K_d] - keys[pygame.K_q]]
-        dy = [keys[pygame.K_DOWN] - keys[pygame.K_UP], keys[pygame.K_s] - keys[pygame.K_z]]
+        dx = keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]
+        dy = keys[pygame.K_DOWN] - keys[pygame.K_UP]
         dt = clock.tick(60) / 1000
         screen.blit(bg, bg_rect)
-        for nb, player in enumerate(players):
-            player.move(dx[nb], dy[nb], dt)
-            player.draw(screen)
+        # for nb, player in enumerate(players):
+        player.move(dx, dy, dt)
+        player.draw(screen)
 
         # Send input (left/right/up) for player[0]
         try:
@@ -56,7 +57,9 @@ def main():
             try:
                 rx = int(pdata.get('x', 0))
                 ry = int(pdata.get('y', 0))
-                pygame.draw.rect(screen, (255, 0, 0), (rx, ry, 40, 60))
+                player2.x = rx
+                player2.y = ry
+                player2.draw(screen)
             except Exception:
                 pass
 
