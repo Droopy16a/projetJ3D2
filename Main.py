@@ -60,7 +60,7 @@ def main():
                 continue
             try:
                 if pid not in remote_players:
-                    remote_players[pid] = Player(pdata.get('x', 0), pdata.get('y', 0), platforms=platforms)
+                    remote_players[pid] = Player(375, pdata.get('y', 0), platforms=platforms)
                 rp = remote_players[pid]
                 vx = float(pdata.get('vx', 0))
                 vy = float(pdata.get('vy', 0))
