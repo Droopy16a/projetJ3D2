@@ -57,8 +57,7 @@ def main():
             try:
                 rx = int(pdata.get('x', 0))
                 ry = int(pdata.get('y', 0))
-                player2.x = rx
-                player2.y = ry
+                player2.move(rx, ry, dt)
                 player2.draw(screen)
             except Exception:
                 pass
