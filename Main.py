@@ -35,8 +35,8 @@ def main():
                 running = False
 
         keys = pygame.key.get_pressed()
-        dx = keys[pygame.K_RIGHT] - keys[pygame.K_LEFT]
-        dy = keys[pygame.K_DOWN] - keys[pygame.K_UP]
+        dx = keys[pygame.K_d] - keys[pygame.K_q]
+        dy = keys[pygame.K_s] - keys[pygame.K_SPACE]
         dt = clock.tick(60) / 1000
         screen.blit(bg, bg_rect)
         # for nb, player in enumerate(players):
@@ -45,9 +45,9 @@ def main():
 
         # Send input (left/right/up) for player[0]
         try:
-            left = keys[pygame.K_LEFT] or keys[pygame.K_q]
-            right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
-            up = keys[pygame.K_UP] or keys[pygame.K_z] or keys[pygame.K_SPACE]
+            left = keys[pygame.K_q]
+            right = keys[pygame.K_d]
+            up = keys[pygame.K_SPACE]
             net.send_input(int(left), int(right), int(up))
         except Exception:
             pass
@@ -57,20 +57,20 @@ def main():
         my_id = getattr(net, 'id', None)
         for pid, pdata in remote.items():
             if pid == my_id:
-                # skip drawing ourself (server may also echo our state)
                 continue
             try:
-                # create remote Player object if needed
                 if pid not in remote_players:
-                    # create with same platforms so collisions/rendering match
                     remote_players[pid] = Player(pdata.get('x', 0), pdata.get('y', 0), platforms=platforms)
                 rp = remote_players[pid]
-                # update authoritative position from server
-                rp.x = float(pdata.get('x', rp.x))
-                rp.y = float(pdata.get('y', rp.y))
-                rp.vel_y = float(pdata.get('vy', rp.vel_y))
-                # update rect to match new position before drawing
-                rp.rect.topleft = (rp.x, rp.y)
+                vx = float(pdata.get('vx', 0))
+                vy = float(pdata.get('vy', 0))
+                dx_remote = 0
+                if vx > 50:
+                    dx_remote = 1
+                elif vx < -50:
+                    dx_remote = -1
+                dy_remote = -1 if vy < -200 else 0
+                rp.move(dx_remote, dy_remote, dt)
                 rp.draw(screen)
             except Exception:
                 pass
