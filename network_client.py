@@ -90,6 +90,13 @@ class NetworkClient:
         data = json.dumps({'type': 'pos', 'x': x, 'y': y, 'vx': vx, 'vy': vy})
         asyncio.run_coroutine_threadsafe(self._safe_send(data), self.loop)
 
+    def send_input(self, left: int, right: int, up: int):
+        """Send input state to the server (left/right/up as 0/1)."""
+        if not self.ws or not self.loop:
+            return
+        data = json.dumps({'type': 'input', 'left': int(bool(left)), 'right': int(bool(right)), 'up': int(bool(up))})
+        asyncio.run_coroutine_threadsafe(self._safe_send(data), self.loop)
+
     async def _safe_send(self, data):
         try:
             await self.ws.send(data)

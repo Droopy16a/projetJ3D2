@@ -12,8 +12,11 @@ def main():
     players = [Player(375, 285, platforms=platforms), Player(0, 285, platforms=platforms)]
 
     # Start network client (connect to local server by default)
-    net = NetworkClient('ws://10.3.139.128:8765')
-    net.start()
+    net = NetworkClient('ws://127.0.0.1:8765')
+    try:
+        net.start()
+    except Exception:
+        print("Failed to start network client")
 
     SIZE = 1
 
@@ -38,26 +41,23 @@ def main():
             player.move(dx[nb], dy[nb], dt)
             player.draw(screen)
 
-        # Send local player (player[0]) position to server
+        # Send input (left/right/up) for player[0]
         try:
-            p0 = players[0]
-            net.send_position(p0.x, p0.y, vx=0, vy=p0.vel_y)
+            left = keys[pygame.K_LEFT] or keys[pygame.K_q]
+            right = keys[pygame.K_RIGHT] or keys[pygame.K_d]
+            up = keys[pygame.K_UP] or keys[pygame.K_z] or keys[pygame.K_SPACE]
+            net.send_input(int(left), int(right), int(up))
         except Exception:
-            print("Failed to send position to server")
             pass
 
-        # Draw remote players from network state (skip local id if present)
+        # Draw remote players from network state
         remote = net.get_players()
-        print("Remote players:", remote)
         for pid, pdata in remote.items():
-            # don't draw ourself if server assigned id not known or matches
             try:
                 rx = int(pdata.get('x', 0))
                 ry = int(pdata.get('y', 0))
-                print(f"Drawing remote player {pid} at ({rx}, {ry})")
                 pygame.draw.rect(screen, (255, 0, 0), (rx, ry, 40, 60))
             except Exception:
-                print("Failed to draw remote player")
                 pass
 
         # screen.fill((0, 0, 0))
@@ -68,5 +68,9 @@ def main():
         clock.tick(60)
 
     pygame.quit()
+    try:
+        net.stop()
+    except Exception:
+        pass
 
 main()
