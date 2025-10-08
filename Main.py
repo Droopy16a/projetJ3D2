@@ -10,15 +10,16 @@ def main():
 
     platforms = [Platform(0, 980, 1920, 250, color=(107, 73, 89)), Platform(300, 800, 300, 20), Platform(700, 600, 300, 20), Platform(1100, 400, 300, 20)]
     player = Player(375, 285, platforms=platforms)
-    player2 = Player(0, 285, platforms=platforms)
 
     # Start network client (connect to local server by default)
-    net = NetworkClient('ws://10.3.139.128:8765')
+    net = NetworkClient('ws://127.0.0.1:8765')
     try:
         net.start()
     except Exception:
         print("Failed to start network client")
 
+    # Remote player objects keyed by server id
+    remote_players = {}
     SIZE = 1
 
     bg = pygame.image.load("game_background_1.png")
@@ -51,14 +52,26 @@ def main():
         except Exception:
             pass
 
-        # Draw remote players from network state
+        # Draw remote players from network state using Player instances
         remote = net.get_players()
+        my_id = getattr(net, 'id', None)
         for pid, pdata in remote.items():
+            if pid == my_id:
+                # skip drawing ourself (server may also echo our state)
+                continue
             try:
-                rx = int(pdata.get('x', 0))
-                ry = int(pdata.get('y', 0))
-                player2.move(rx, ry, dt)
-                player2.draw(screen)
+                # create remote Player object if needed
+                if pid not in remote_players:
+                    # create with same platforms so collisions/rendering match
+                    remote_players[pid] = Player(pdata.get('x', 0), pdata.get('y', 0), platforms=platforms)
+                rp = remote_players[pid]
+                # update authoritative position from server
+                rp.x = float(pdata.get('x', rp.x))
+                rp.y = float(pdata.get('y', rp.y))
+                rp.vel_y = float(pdata.get('vy', rp.vel_y))
+                # update rect to match new position before drawing
+                rp.rect.topleft = (rp.x, rp.y)
+                rp.draw(screen)
             except Exception:
                 pass
 
