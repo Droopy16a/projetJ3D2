@@ -12,7 +12,7 @@ def main():
     player = Player(375, 285, platforms=platforms)
 
     # Start network client (connect to local server by default)
-    net = NetworkClient('ws://127.0.0.1:8765')
+    net = NetworkClient('ws://10.3.139.128:8765')
     try:
         net.start()
     except Exception:
