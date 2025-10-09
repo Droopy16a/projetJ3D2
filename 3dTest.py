@@ -8,12 +8,13 @@ player_entity = Entity()
 
 character = Actor('models/perso.glb')
 character.reparent_to(player_entity)
+character.enableBlend()
 
 anims = character.getAnimNames()
 print("Animations found:", anims)
 
-WALK_ANIM = "Armature.002|mixamo.com|Layer0"
-IDLE_ANIM = ""
+WALK_ANIM = "Armature.004|mixamo.com|Layer0.003"
+IDLE_ANIM = "Armature.003Action"
 
 if IDLE_ANIM in anims:
     character.loop(IDLE_ANIM)
@@ -50,10 +51,15 @@ def update():
     if anims:
         if is_moving:
             if character.getCurrentAnim() != WALK_ANIM:
-                character.loop(WALK_ANIM)
+                character.stop()
+                character.setControlEffect(WALK_ANIM, 1.0)   # no easing/blend
+                character.setPlayRate(1.0, WALK_ANIM)        # constant speed
+                character.loop(WALK_ANIM, fromFrame=0, toFrame=20)
         else:
             if character.getCurrentAnim() != IDLE_ANIM:
                 character.stop()
+                character.setControlEffect(IDLE_ANIM, 1.0)
+                character.setPlayRate(1.0, IDLE_ANIM)
                 character.loop(IDLE_ANIM)
 
 

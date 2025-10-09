@@ -9,7 +9,7 @@ class Player:
         self.width = width
         self.height = height
         self.color = (0, 128, 255)  # For debugging, if needed
-        self.speed = 16  # Horizontal speed
+        self.speed = 10  # Horizontal speed
         self.jump_height = 25  # Jump velocity
         self.vel_y = 0
         self.gravity = 1.5
@@ -21,7 +21,7 @@ class Player:
             load_image(f"./frame/frame{i}.png", scale=(width, height)) for i in range(0, 8)
         ]
         self.current_frame = 0
-        self.animation_speed = 0.3  # Frames per second
+        self.animation_speed = 0.2  # Frames per second
         self.frame_timer = 0
         self.image = self.frames[0]
         self.mask = pygame.mask.from_surface(self.image)
@@ -77,7 +77,7 @@ class Player:
                 offset_y = platform.rect.y - self.rect.y
                 if self.mask.overlap(platform.mask, (offset_x, offset_y)):
                     # Check if player is falling and above platform
-                    if self.vel_y >= 0 and self.y + self.height - self.vel_y * dt_scale <= platform.rect.y + 100:
+                    if self.vel_y >= 0 and self.y + self.height - self.vel_y * dt_scale <= platform.rect.y + 200:
                         # print("Checking collision with platform at", platform)
                         # self.y = platform.rect.y - self.rect.y
                         # print(self.y)
