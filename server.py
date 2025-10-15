@@ -7,10 +7,9 @@ import websockets
 
 logging.basicConfig(level=logging.INFO)
 
-# Connected websockets and player state
 CONNECTED = set()
 WS_TO_ID = {}
-PLAYERS = {}  # id -> {id,x,y,vx,vy,last_seen}
+PLAYERS = {} 
 
 
 async def handler(ws):
@@ -22,7 +21,6 @@ async def handler(ws):
     logging.info(f"Client connected: {client_id}")
 
     try:
-        # Send welcome with assigned id
         await ws.send(json.dumps({"type": "welcome", "id": client_id}))
 
         async for raw in ws:
@@ -36,7 +34,6 @@ async def handler(ws):
                 p = PLAYERS.get(client_id)
                 if p is None:
                     continue
-                # update player state directly from client
                 p["x"] = float(msg.get("x", p["x"]))
                 p["y"] = float(msg.get("y", p["y"]))
                 p["vx"] = float(msg.get("vx", p.get("vx", 0)))
@@ -60,7 +57,6 @@ async def broadcaster(tick_hz: int = 20):
     while True:
         if CONNECTED:
             now = time.time()
-            # remove players that haven't updated in 10s
             stale = [pid for pid, p in PLAYERS.items() if now - p.get("last_seen", 0) > 10]
             for pid in stale:
                 PLAYERS.pop(pid, None)
@@ -89,7 +85,7 @@ async def safe_send(ws, msg):
 async def main(host: str = "0.0.0.0", port: int = 8765):
     async with websockets.serve(handler, host, port):
         logging.info(f"Server running on ws://{host}:{port}")
-        await broadcaster()  # run broadcaster until server closes
+        await broadcaster()
 
 
 if __name__ == "__main__":

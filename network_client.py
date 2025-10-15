@@ -57,7 +57,6 @@ class NetworkClient:
         try:
             async with websockets.connect(self.uri) as ws:
                 self.ws = ws
-                # receive welcome
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=2)
                     msg = json.loads(raw)
@@ -66,7 +65,6 @@ class NetworkClient:
                 except Exception:
                     pass
 
-                # spawn tasks: receiver and ping sender
                 receiver = asyncio.create_task(self._receiver(ws))
                 await receiver
         except Exception:
@@ -84,7 +82,6 @@ class NetworkClient:
                     self.players = {p['id']: p for p in pl}
 
     def send_position(self, x, y, vx=0, vy=0):
-        # non-blocking send via thread-safe asyncio call
         if not self.ws or not self.loop:
             return
         data = json.dumps({'type': 'pos', 'x': x, 'y': y, 'vx': vx, 'vy': vy})
