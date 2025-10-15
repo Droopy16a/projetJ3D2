@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 
 def main():
     pygame.init()
-    screen = pygame.display.set_mode((1920//2, 950))
+    screen = pygame.display.set_mode((1920, 1080))
     pygame.display.set_caption("Game")
 
     platforms = [
@@ -76,7 +76,7 @@ def main():
             try:
                 if pid not in remote_players:
                     remote_players[pid] = Player(pdata.get('x', 375), pdata.get('y', 285), platforms=platforms)
-                print(pdata)
+                # print(pdata)
                 rp = remote_players[pid]
                 rp.x = float(pdata.get('x', rp.x))
                 rp.y = float(pdata.get('y', rp.y))
