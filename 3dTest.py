@@ -3,6 +3,7 @@ from direct.showbase.ShowBase import ShowBase
 from panda3d.core import Vec3, DirectionalLight, AmbientLight, Vec4, WindowProperties, loadPrcFileData
 from direct.actor.Actor import Actor
 from panda3d.bullet import BulletWorld, BulletRigidBodyNode, BulletBoxShape
+from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func  ### CHANGED
 import simplepbr
 import math
 
@@ -70,7 +71,7 @@ class Game(ShowBase):
         cube_vis.setScale(1)
 
         # Importation du model
-        self.character = Actor("models/perso3.glb")
+        self.character = Actor("models/perso5.glb")
         self.character.reparentTo(self.char_np)
         self.character.setScale(1.0)
 
@@ -80,7 +81,7 @@ class Game(ShowBase):
 
         self.IDLE_ANIM = "idle"
         self.WALK_ANIM = "runvrai"
-        self.JUMP_ANIM = "jump" if "jump" in anims else None
+        self.JUMP_ANIM = "jumpstatvrai"
 
         if self.IDLE_ANIM in anims:
             self.character.loop(self.IDLE_ANIM)
@@ -92,10 +93,15 @@ class Game(ShowBase):
 
         # Bon les touches quoi
         self.speed = 10.0
-        self.jump_strength = 10.0
+        self.jump_strength = 7.0
         self.keys = {"z": False, "q": False, "s": False, "d": False}
         self.is_moving = False
         self.is_jumping = False
+        self.is_charging_jump = False
+        self.jump_crouch_frame = 10
+        self.jump_fly_frame = 25
+        self.jump_sequence = None
+        self.charge = 0
 
         self.accept("z", self.set_key, ["z", True])
         self.accept("z-up", self.set_key, ["z", False])
@@ -105,7 +111,8 @@ class Game(ShowBase):
         self.accept("q-up", self.set_key, ["q", False])
         self.accept("d", self.set_key, ["d", True])
         self.accept("d-up", self.set_key, ["d", False])
-        self.accept("space", self.jump)
+        self.accept("space", self.start_jump_charge)
+        self.accept("space-up", self.perform_jump)
 
         # Les tache à faire (liée aux fonctions)
         self.taskMgr.add(self.update_physics, "update_physics")
@@ -128,21 +135,68 @@ class Game(ShowBase):
         result = self.physics_world.rayTestClosest(from_pos, to_pos)
         if result.hasHit():
             hit_node = result.getNode()
-            if hit_node.getName() == "Ground":
+            if hit_node.getName() == "Ground" or hit_node.getName() == "Cube":
                 return True
         return False
     
-    def jump(self):
-        if self.is_on_ground():
-            vel = self.char_node.getLinearVelocity()
-            vel.setZ(self.jump_strength)
-            self.char_node.setLinearVelocity(vel)
+    def start_jump_charge(self):
+        if self.is_on_ground() and not self.is_jumping:
+            self.is_charging_jump = True
+            self.character.stop()
+            if self.JUMP_ANIM in self.character.getAnimNames():
+                if self.jump_sequence:
+                    self.jump_sequence.finish()
+
+                jump_crouch = ActorInterval(
+                    self.character,
+                    self.JUMP_ANIM,
+                    startFrame=0,
+                    endFrame=self.jump_crouch_frame
+                )
+
+                run_crouch = ActorInterval(
+                    self.character,
+                    self.WALK_ANIM,
+                    startFrame=0
+                )
+
+                crouch_func = Func(self.character.pose, self.JUMP_ANIM, self.jump_crouch_frame + 1)
+                self.crouch_sequence = Sequence(jump_crouch, crouch_func) if not self.is_moving else run_crouch
+                
+                self.crouch_sequence.start()
+
+    def perform_jump(self):
+        if self.is_charging_jump and self.is_on_ground():
+            self.is_charging_jump = False
             self.is_jumping = True
 
-            if self.JUMP_ANIM:
-                self.character.play(self.JUMP_ANIM)
+            vel = self.char_node.getLinearVelocity()
+            vel.setZ(self.charge)
+            self.char_node.setLinearVelocity(vel)
+            self.charge = 0
 
-    # Pour faire bouger le perso
+            if self.JUMP_ANIM in self.character.getAnimNames():
+                if self.jump_sequence:
+                    self.jump_sequence.finish()
+
+                jump_anim = ActorInterval(
+                    self.character,
+                    self.JUMP_ANIM,
+                    startFrame=self.jump_crouch_frame,
+                    endFrame=self.jump_fly_frame
+                )
+
+                jump_anim_end = ActorInterval(
+                    self.character,
+                    self.JUMP_ANIM,
+                    startFrame=self.jump_fly_frame + 1
+                )
+
+                finish_func = Func(self.character.pose, self.JUMP_ANIM, self.jump_fly_frame + 1)
+                self.jump_sequence = Sequence(jump_anim, finish_func)
+                self.land = Sequence(finish_func, jump_anim_end)
+                self.jump_sequence.start()
+
     def update(self, task):
         dt = globalClock.getDt()
         move_x = float(self.keys["d"]) - float(self.keys["q"])
@@ -151,6 +205,10 @@ class Game(ShowBase):
         self.camera.setPos(self.char_np.getPos()[0], *tuple(self.camera.getPos())[1:])
 
         on_ground = self.is_on_ground()
+
+        if self.is_charging_jump:
+            if self.charge < 10:
+                self.charge += 1
 
         if move_vec.length() > 0:
             self.is_moving = True
@@ -165,7 +223,7 @@ class Game(ShowBase):
             self.char_np.setH(angle)
 
             current = self.character.getCurrentAnim()
-            if on_ground and not self.is_jumping:
+            if on_ground and not self.is_jumping and not self.is_charging_jump:
                 if current != self.WALK_ANIM and self.WALK_ANIM in self.character.getAnimNames():
                     self.character.stop()
                     self.character.loop(self.WALK_ANIM)
@@ -175,17 +233,20 @@ class Game(ShowBase):
             vel.setY(0)
             self.char_node.setLinearVelocity(vel)
 
-            if on_ground and not self.is_jumping:
+            if on_ground and not self.is_jumping and not self.is_charging_jump:
                 current = self.character.getCurrentAnim()
-                if current != self.IDLE_ANIM and self.IDLE_ANIM in self.character.getAnimNames():
+                if current != self.IDLE_ANIM and self.IDLE_ANIM in self.character.getAnimNames() and current != self.JUMP_ANIM:
                     self.character.stop()
                     self.character.loop(self.IDLE_ANIM)
                 self.is_moving = False
 
         if on_ground and self.is_jumping:
             self.is_jumping = False
-            if self.IDLE_ANIM in self.character.getAnimNames():
-                self.character.loop(self.IDLE_ANIM)
+            if not self.is_charging_jump:
+                self.character.play(self.JUMP_ANIM, fromFrame=self.jump_fly_frame + 1)
+
+        elif not on_ground:
+            self.is_jumping = True
 
         return task.cont
 
