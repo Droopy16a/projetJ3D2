@@ -1,9 +1,8 @@
-# main.py
 from direct.showbase.ShowBase import ShowBase
 from panda3d.core import Vec3, DirectionalLight, AmbientLight, Vec4, WindowProperties, loadPrcFileData
 from direct.actor.Actor import Actor
 from panda3d.bullet import BulletWorld, BulletRigidBodyNode, BulletBoxShape
-from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func  ### CHANGED
+from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 import simplepbr
 import math
 
