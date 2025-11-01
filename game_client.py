@@ -6,8 +6,103 @@ from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 import simplepbr
 import math
 
+# networking imports
+import asyncio
+import websockets
+import threading
+import queue
+import json
+import time
+
 loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "basic-shaders-only #f")
+
+# --- Network client that runs in a thread ---
+class NetworkClient:
+    """
+    Connects to a websocket server, sends local state, receives remote states.
+    Uses a thread-safe queue to pass incoming messages to main thread.
+    """
+    def __init__(self, uri, incoming_queue, send_interval=0.05):
+        self.uri = uri
+        self.incoming = incoming_queue
+        self.send_interval = send_interval
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._stop_event = threading.Event()
+        self._outgoing_queue = queue.Queue()  # messages to send (from main thread)
+        self._connected = False
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def send(self, data):
+        """Called by main thread to send a JSON-serializable object to server."""
+        try:
+            self._outgoing_queue.put_nowait(data)
+        except queue.Full:
+            pass
+
+    def _run(self):
+        """Thread target — runs asyncio event loop and websocket connection."""
+        asyncio.run(self._async_main())
+
+    async def _async_main(self):
+        try:
+            async with websockets.connect(self.uri) as ws:
+                self._connected = True
+                recv_task = asyncio.create_task(self._recv_loop(ws))
+                send_task = asyncio.create_task(self._send_loop(ws))
+                done, pending = await asyncio.wait(
+                    [recv_task, send_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                for t in pending:
+                    t.cancel()
+        except Exception as e:
+            print("Network error:", e)
+        finally:
+            self._connected = False
+
+    async def _recv_loop(self, ws):
+        try:
+            async for msg in ws:
+                # parse incoming JSON and put on queue
+                try:
+                    data = json.loads(msg)
+                    self.incoming.put_nowait(data)
+                except Exception:
+                    pass
+                if self._stop_event.is_set():
+                    break
+        except Exception:
+            pass
+
+    async def _send_loop(self, ws):
+        """Periodically send messages from outgoing queue and also a heartbeat period."""
+        while not self._stop_event.is_set():
+            try:
+                last = None
+                while True:
+                    try:
+                        last = self._outgoing_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                if last is not None:
+                    try:
+                        await ws.send(json.dumps(last))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await ws.send(json.dumps({"type": "heartbeat", "t": time.time()}))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            await asyncio.sleep(self.send_interval)
 
 class Game(ShowBase):
     def __init__(self):
@@ -16,14 +111,12 @@ class Game(ShowBase):
         simplepbr.init(use_normal_maps=True, use_emission_maps=True, enable_shadows=True)
 
         props = WindowProperties()
-        props.setTitle("DZ jeu")
+        props.setTitle("DZ jeu (networked)")
         self.win.requestProperties(props)
 
-        # Caméra
         self.camera.setPos(0, -30, 6)
-        self.camera.setHpr(0, 0, 0) #hpr = rotation
+        self.camera.setHpr(0, 0, 0)
 
-        # Lumière
         dlight = DirectionalLight('dlight')
         dlight.setColor(Vec4(0.8, 0.8, 0.8, 1))
         dlnp = self.render.attachNewNode(dlight)
@@ -35,11 +128,9 @@ class Game(ShowBase):
         alnp = self.render.attachNewNode(alight)
         self.render.setLight(alnp)
 
-        # init de la physique
         self.physics_world = BulletWorld()
         self.physics_world.setGravity(Vec3(0, 0, -9.81))
 
-        # le sol
         ground_shape = BulletBoxShape(Vec3(50, 50, 1))
         ground_node = BulletRigidBodyNode('Ground')
         ground_node.addShape(ground_shape)
@@ -48,7 +139,6 @@ class Game(ShowBase):
         ground_np.setPos(0, 0, -2)
         self.physics_world.attachRigidBody(ground_node)
 
-        # init de la physique
         char_shape = BulletBoxShape(Vec3(0.5, 0.5, 1))
         self.char_node = BulletRigidBodyNode('Character')
         self.char_node.setMass(70)
@@ -69,12 +159,10 @@ class Game(ShowBase):
         cube_vis.reparentTo(cube_np)
         cube_vis.setScale(1)
 
-        # Importation du model
         self.character = Actor("models/perso5.glb")
         self.character.reparentTo(self.char_np)
         self.character.setScale(1.0)
 
-        # Setup de l'anim
         anims = list(self.character.getAnimNames())
         print("Animations:", anims)
 
@@ -90,7 +178,13 @@ class Game(ShowBase):
         else:
             print("[WARN] no animations found in model.")
 
-        # Bon les touches quoi
+        self.remote_np = self.render.attachNewNode("remote_root")
+        self.remote_character = Actor("models/perso5.glb")
+        self.remote_character.reparentTo(self.remote_np)
+        self.remote_character.setScale(1.0)
+        if self.IDLE_ANIM in anims:
+            self.remote_character.loop(self.IDLE_ANIM)
+
         self.speed = 10.0
         self.jump_strength = 7.0
         self.keys = {"z": False, "q": False, "s": False, "d": False}
@@ -113,21 +207,44 @@ class Game(ShowBase):
         self.accept("space", self.start_jump_charge)
         self.accept("space-up", self.perform_jump)
 
-        # Les tache à faire (liée aux fonctions)
         self.taskMgr.add(self.update_physics, "update_physics")
         self.taskMgr.add(self.update, "updateTask")
 
-    # Geestion de la physique
+        self.net_queue = queue.Queue()
+        self.net = NetworkClient("ws://localhost:8765", self.net_queue, send_interval=0.05)
+        self.net.start()
+
+        self.last_send = 0.0
+        self.send_period = 0.05
+
+        self.remote_state = {}
+
+        self.taskMgr.add(self.apply_network_updates, "apply_network_updates")
+
+        self.accept("escape", self.on_exit)
+        self.accept("window-event", self.on_exit_window)
+
+    def on_exit_window(self, window):
+        if window is None:
+            self.on_exit()
+
+    def on_exit(self, *args):
+        print("Shutting down network...")
+        try:
+            self.net.stop()
+        except Exception:
+            pass
+        import sys
+        sys.exit(0)
+
     def update_physics(self, task):
         dt = globalClock.getDt()
         self.physics_world.doPhysics(dt, 10, 0.008)
         return task.cont
 
-    # nom de touche -> touche
     def set_key(self, key, value):
         self.keys[key] = value
 
-    # Détecte le sol
     def is_on_ground(self):
         from_pos = self.char_np.getPos() + Vec3(0, 0, 0.5)
         to_pos = self.char_np.getPos() - Vec3(0, 0, 1.5)
@@ -137,7 +254,7 @@ class Game(ShowBase):
             if hit_node.getName() == "Ground" or hit_node.getName() == "Cube":
                 return True
         return False
-    
+
     def start_jump_charge(self):
         if self.is_on_ground() and not self.is_jumping:
             self.is_charging_jump = True
@@ -161,7 +278,7 @@ class Game(ShowBase):
 
                 crouch_func = Func(self.character.pose, self.JUMP_ANIM, self.jump_crouch_frame + 1)
                 self.crouch_sequence = Sequence(jump_crouch, crouch_func) if not self.is_moving else run_crouch
-                
+
                 self.crouch_sequence.start()
 
     def perform_jump(self):
@@ -247,7 +364,61 @@ class Game(ShowBase):
         elif not on_ground:
             self.is_jumping = True
 
+        now = time.time()
+        if now - self.last_send > self.send_period:
+            self.last_send = now
+            self.send_own_state()
+
         return task.cont
 
-game = Game()
-game.run()
+    def send_own_state(self):
+        pos = self.char_np.getPos()
+        hpr = self.char_np.getHpr()
+        anim = self.character.getCurrentAnim() or ""
+        data = {
+            "type": "state",
+            "pos": [pos.x, pos.y, pos.z],
+            "hpr": [hpr.x, hpr.y, hpr.z],
+            "anim": anim,
+            "t": time.time(),
+        }
+        self.net.send(data)
+
+    def apply_network_updates(self, task):
+        processed = 0
+        while processed < 10:
+            try:
+                msg = self.net_queue.get_nowait()
+            except queue.Empty:
+                break
+            processed += 1
+            if not isinstance(msg, dict):
+                continue
+            # ignore heartbeats
+            if msg.get("type") != "state":
+                continue
+            self.remote_state = msg
+
+        if self.remote_state:
+            try:
+                p = self.remote_state.get("pos", [0,0,0])
+                h = self.remote_state.get("hpr", [0,0,0])
+                anim = self.remote_state.get("anim", "")
+                self.remote_np.setPos(p[0], p[1], p[2])
+                self.remote_np.setH(h[0])
+                current = self.remote_character.getCurrentAnim()
+                if anim and anim != current and anim in self.remote_character.getAnimNames():
+                    if anim == self.WALK_ANIM:
+                        self.remote_character.loop(anim)
+                    elif anim == self.IDLE_ANIM:
+                        self.remote_character.loop(anim)
+                    else:
+                        self.remote_character.play(anim)
+            except Exception:
+                pass
+
+        return task.cont
+
+if __name__ == "__main__":
+    game = Game()
+    game.run()
