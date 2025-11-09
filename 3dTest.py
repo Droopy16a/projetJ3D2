@@ -1,19 +1,39 @@
 from direct.showbase.ShowBase import ShowBase
 from panda3d.core import Vec3, DirectionalLight, AmbientLight, Vec4, WindowProperties, loadPrcFileData
 from direct.actor.Actor import Actor
-from panda3d.bullet import BulletWorld, BulletRigidBodyNode, BulletBoxShape
+from panda3d.bullet import BulletWorld, BulletRigidBodyNode, BulletBoxShape, BulletDebugNode
+from panda3d.core import BitMask32, TransformState, Texture, Filename, PNMImage
 from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
-import simplepbr
 import math
+# import sys
+# sys.path.append("./panda3d-simplepbr/")
+import simplepbr
+import imageio.v3 as iio
+import numpy as np
+from simplepbr.envmap import EnvMap
+import panda3d.core as p3d
+import complexpbr
 
 loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "basic-shaders-only #f")
-
+# loadPrcFileData("", "framebuffer-srgb true")
 class Game(ShowBase):
     def __init__(self):
         super().__init__()
         self.disableMouse()
-        simplepbr.init(use_normal_maps=True, use_emission_maps=True, enable_shadows=True)
+
+        # hdr_path = "./env.hdr"
+        # env_cubemap = EnvMap.__new__(EnvMap)
+        # env_cubemap.cubemap = p3d.Texture()
+
+        simplepbr.init(
+            use_normal_maps=True,
+            enable_shadows=True,
+            use_emission_maps=True,
+            use_330=True,
+            env_map="HDR_029_Sky_Cloudy_Env.exr"
+            )
+        # complexpbr.apply_shader(self.render)
 
         props = WindowProperties()
         props.setTitle("DZ jeu")
@@ -40,19 +60,24 @@ class Game(ShowBase):
         self.physics_world.setGravity(Vec3(0, 0, -9.81))
 
         # le sol
-        ground_shape = BulletBoxShape(Vec3(50, 50, 1))
+        ground_shape = BulletBoxShape(Vec3(500, 500, 1))
         ground_node = BulletRigidBodyNode('Ground')
         ground_node.addShape(ground_shape)
         ground_node.setMass(0)
         ground_np = self.render.attachNewNode(ground_node)
-        ground_np.setPos(0, 0, -2)
+        ground_np.setPos(0, 400, 0)
+        ground_np.setHpr(270, 0, 0)
         self.physics_world.attachRigidBody(ground_node)
+
+        self.level = self.loader.loadModel("models/level.glb")
+        self.level.reparentTo(ground_np)
+        self.level.setScale(10.0)
 
         # init de la physique
         char_shape = BulletBoxShape(Vec3(0.5, 0.5, 1))
         self.char_node = BulletRigidBodyNode('Character')
         self.char_node.setMass(70)
-        self.char_node.addShape(char_shape)
+        self.char_node.addShape(char_shape, TransformState.makePos(Vec3(0, 0, 1)))
         self.char_node.setAngularFactor(Vec3(0, 0, 0))
         self.char_np = self.render.attachNewNode(self.char_node)
         self.char_np.setPos(0, 0, 5)
@@ -60,8 +85,8 @@ class Game(ShowBase):
 
         cube_shape = BulletBoxShape(Vec3(1, 1, 1))
         cube_node = BulletRigidBodyNode('Cube')
-        cube_node.setMass(10)
-        cube_node.addShape(cube_shape)
+        cube_node.setMass(20)
+        cube_node.addShape(cube_shape, TransformState.makePos(Vec3(0, 0, 1)))
         cube_np = self.render.attachNewNode(cube_node)
         cube_np.setPos(2, 0, 0)
         self.physics_world.attachRigidBody(cube_node)
@@ -70,9 +95,36 @@ class Game(ShowBase):
         cube_vis.setScale(1)
 
         # Importation du model
-        self.character = Actor("models/perso5.glb")
+        self.character = Actor("models/perso6.glb")
         self.character.reparentTo(self.char_np)
         self.character.setScale(1.0)
+
+        #l'épée
+        debug_node = BulletDebugNode('BulletDebug')
+        debug_np = self.render.attachNewNode(debug_node)
+        debug_np.show()
+        self.physics_world.setDebugNode(debug_node)
+
+        # sword_shape = BulletBoxShape(Vec3(0.5, 1.75, 0.5))
+        sword_shape = BulletBoxShape(Vec3(0.05, 1.25, 0.5))
+        self.sword_node = BulletRigidBodyNode('Sword')
+        self.sword_node.setMass(0)
+        self.sword_node.addShape(sword_shape, TransformState.makePos(Vec3(0, -1, 0)))
+        # self.sword_node.setAngularFactor(Vec3(0, 0, 0))
+        # self.sword_np = self.render.attachNewNode(self.sword_node)
+        self.sword_np = self.render.attachNewNode("Sword")
+        joint = self.character.exposeJoint(None, 'modelRoot', 'mixamorig:RightHand')
+        # self.sword_np.reparentTo(joint)
+        self.sword_np.setScale(1.0)
+
+        self.sword_np.setPos(0, 0, 10)
+        self.sword_np.setHpr(0, 0, 0)
+
+        self.physics_world.attachRigidBody(self.sword_node)
+        self.sword = self.loader.loadModel("models/sword.glb")
+        self.sword.reparentTo(self.sword_np)
+        self.sword.setScale(1.0)
+        
 
         # Setup de l'anim
         anims = list(self.character.getAnimNames())
@@ -100,7 +152,7 @@ class Game(ShowBase):
         self.jump_crouch_frame = 10
         self.jump_fly_frame = 25
         self.jump_sequence = None
-        self.charge = 0
+        self.charge = 5
 
         self.accept("z", self.set_key, ["z", True])
         self.accept("z-up", self.set_key, ["z", False])
@@ -160,7 +212,9 @@ class Game(ShowBase):
                 )
 
                 crouch_func = Func(self.character.pose, self.JUMP_ANIM, self.jump_crouch_frame + 1)
-                self.crouch_sequence = Sequence(jump_crouch, crouch_func) if not self.is_moving else run_crouch
+                run_func = Func(self.character.loop, self.WALK_ANIM)
+
+                self.crouch_sequence = Sequence(jump_crouch, crouch_func) if not self.is_moving else Sequence(run_crouch, run_func)
                 
                 self.crouch_sequence.start()
 
@@ -172,7 +226,7 @@ class Game(ShowBase):
             vel = self.char_node.getLinearVelocity()
             vel.setZ(self.charge)
             self.char_node.setLinearVelocity(vel)
-            self.charge = 0
+            self.charge = 5
 
             if self.JUMP_ANIM in self.character.getAnimNames():
                 if self.jump_sequence:
@@ -202,12 +256,26 @@ class Game(ShowBase):
         move_y = float(self.keys["z"]) - float(self.keys["s"])
         move_vec = Vec3(move_x, move_y, 0)
         self.camera.setPos(self.char_np.getPos()[0], *tuple(self.camera.getPos())[1:])
+        joint = self.character.exposeJoint(None, 'modelRoot', 'mixamorig:RightHand')
+
+        self.sword_np.setHpr(self.char_np.getHpr()[0] + joint.getHpr()[0] - 90, -joint.getHpr()[1], joint.getHpr()[2] + 90)
+        # self.sword_np.setPos(self.char_np, joint.getPos(self.char_np) + Vec3(0, 0, 0))
+        if self.is_moving or self.is_charging_jump:
+            self.sword_np.setPos(self.char_np, joint.getPos(self.char_np) + Vec3(0.0, 0.0, 0.0))
+        else:
+            self.sword_np.setPos(self.char_np, joint.getPos(self.char_np) + Vec3(0.0, -0.5, -0.3))
+        # self.sword_np.setScale(10.0)
+        # self.sword_np.setPos(joint, Vec3(50, -15, 40))
+
+        # self.sword_np.setPos(self.char_np , joint.getPos(self.render))
 
         on_ground = self.is_on_ground()
 
         if self.is_charging_jump:
             if self.charge < 10:
-                self.charge += 1
+                self.charge += 0.1
+            else:
+                self.perform_jump()
 
         if move_vec.length() > 0:
             self.is_moving = True

@@ -3,10 +3,8 @@ from panda3d.core import Vec3, DirectionalLight, AmbientLight, Vec4, WindowPrope
 from direct.actor.Actor import Actor
 from panda3d.bullet import BulletWorld, BulletRigidBodyNode, BulletBoxShape
 from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
-import simplepbr
 import math
 
-# networking imports
 import asyncio
 import websockets
 import threading
@@ -14,10 +12,13 @@ import queue
 import json
 import time
 
+import sys
+sys.path.append("./panda3d-simplepbr/")
+import simplepbr
+
 loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "basic-shaders-only #f")
 
-# --- Network client that runs in a thread ---
 class NetworkClient:
     """
     Connects to a websocket server, sends local state, receives remote states.
@@ -29,7 +30,7 @@ class NetworkClient:
         self.send_interval = send_interval
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._stop_event = threading.Event()
-        self._outgoing_queue = queue.Queue()  # messages to send (from main thread)
+        self._outgoing_queue = queue.Queue() 
         self._connected = False
 
     def start(self):
