@@ -54,7 +54,7 @@ class BOTWMenu(ShowBase):
         )
 
         self.title.setTransparency(TransparencyAttrib.MAlpha)
-        self.title["image"] = "logo.png"
+        # self.title["image"] = "logo.png"
 
         self.buttons = []
         self.current_index = 0
