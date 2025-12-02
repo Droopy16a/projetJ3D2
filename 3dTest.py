@@ -12,7 +12,7 @@ import imageio.v3 as iio
 import numpy as np
 from simplepbr.envmap import EnvMap
 import panda3d.core as p3d
-import complexpbr
+# import complexpbr
 
 loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "basic-shaders-only #f")
@@ -31,7 +31,7 @@ class Game(ShowBase):
             enable_shadows=True,
             use_emission_maps=True,
             use_330=True,
-            env_map="HDR_029_Sky_Cloudy_Env.exr"
+            # env_map="HDR_029_Sky_Cloudy_Env.exr"
             )
         # complexpbr.apply_shader(self.render)
 
@@ -98,6 +98,24 @@ class Game(ShowBase):
         self.character = Actor("models/perso6.glb")
         self.character.reparentTo(self.char_np)
         self.character.setScale(1.0)
+
+        mob_shape = BulletBoxShape(Vec3(0.5, 0.5, 1))
+        self.mob_node = BulletRigidBodyNode('mob')
+        self.mob_node.setMass(30)
+        self.mob_node.addShape(mob_shape, TransformState.makePos(Vec3(0, 0, 1)))
+        self.mob_node.setAngularFactor(Vec3(0, 0, 0))
+        self.mob_np = self.render.attachNewNode(self.mob_node)
+        self.mob_np.setPos(0, 0, 7)
+        self.physics_world.attachRigidBody(self.mob_node)
+        
+        self.mob = Actor("models/mob.glb")
+        self.mob.reparentTo(self.mob_np)
+        self.mob.setScale(1.0)
+
+        self.mob_last = 1
+        self.mob.loop("run")
+        self.mob_speed = 2.5
+        self.mob_np.setH(90)
 
         #l'épée
         debug_node = BulletDebugNode('BulletDebug')
@@ -186,8 +204,8 @@ class Game(ShowBase):
         result = self.physics_world.rayTestClosest(from_pos, to_pos)
         if result.hasHit():
             hit_node = result.getNode()
-            if hit_node.getName() == "Ground" or hit_node.getName() == "Cube":
-                return True
+            # if hit_node.getName() == "Ground" or hit_node.getName() == "Cube":
+            return True
         return False
     
     def start_jump_charge(self):
@@ -252,6 +270,17 @@ class Game(ShowBase):
 
     def update(self, task):
         dt = globalClock.getDt()
+
+        pos = self.mob_np.getPos()
+        if pos.x > 20:
+            self.mob_last = -1
+            self.mob_np.setH(-90)
+        elif pos.x < -20:
+            self.mob_last = 1
+            self.mob_np.setH(90)
+
+        self.mob_np.setPos(pos + Vec3(self.mob_last * self.mob_speed * dt,0, 0))
+        
         move_x = float(self.keys["d"]) - float(self.keys["q"])
         move_y = float(self.keys["z"]) - float(self.keys["s"])
         move_vec = Vec3(move_x, move_y, 0)
