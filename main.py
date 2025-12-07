@@ -49,8 +49,8 @@ class Config:
     jump_charge_rate: float = 0.1
 
     level_model: str = "models/plat3.glb"
-    player_model: str = "models/perso6.glb"
-    mob_model: str = "models/mob.glb"
+    player_model: str = "models/persoepe.glb"
+    mob_model: str = "models/mobA.glb"
     cube_model: str = "models/box.glb"
     sword_model: str = "models/sword.glb"
 
@@ -59,8 +59,6 @@ def bit(gid: int) -> BitMask32:
 
 
 class PhysicsManager:
-    """Wrapper around BulletWorld and debug drawing."""
-
     def __init__(self, gravity: Vec3, render):
         self.world = BulletWorld()
         self.world.setGravity(gravity)
@@ -84,8 +82,6 @@ class PhysicsManager:
 
 
 class Character:
-    """Player character with animation + bullet body + jumping logic."""
-
     def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 5)):
         self.config = config
         self.render = render
@@ -109,8 +105,8 @@ class Character:
 
         anims = set(self.actor.getAnimNames())
         self.IDLE_ANIM = 'idle' if 'idle' in anims else (next(iter(anims)) if anims else None)
-        self.WALK_ANIM = 'runvrai' if 'runvrai' in anims else self.IDLE_ANIM
-        self.JUMP_ANIM = 'jumpstatvrai' if 'jumpstatvrai' in anims else None
+        self.WALK_ANIM = 'running' if 'running' in anims else self.IDLE_ANIM
+        self.JUMP_ANIM = 'jumping' if 'jumping' in anims else None
 
         if self.IDLE_ANIM:
             self.actor.loop(self.IDLE_ANIM)
@@ -257,13 +253,14 @@ class Mob:
         forward = self.np.getQuat().getForward()
         forward.normalize()
 
+        current = self.actor.getCurrentAnim()
 
         pos = self.np.getPos()
         start = pos + Vec3(0, 0, 0.5)
         from_pos = start + forward * 0.5
         to_pos   = start + forward * -0.5
 
-        from_hitzone = start + forward * -2.5
+        from_hitzone = start + forward * -3.5
         to_hitzone   = start + forward * 0.5
 
         result = self.physics.world.rayTestClosest(from_pos, to_pos)
@@ -280,9 +277,11 @@ class Mob:
         self.ray_node = self.render.attachNewNode(self.ray_vis.create())
 
         if hitzone.hasHit() and hitzone.getNode().getName() == 'Character':
-            print("HIT ZONE")
+            if current != 'atack' and 'atack' in self.actor.getAnimNames():
+                self.actor.stop()
+                self.actor.play('atack')
 
-        if result.hasHit() and result.getNode() != self.node and result.getNode().getName() != 'mob':
+        elif result.hasHit() and result.getNode() != self.node and result.getNode().getName() != 'mob':
             print("Mob hit:", result.getNode().getName())
             self.direction *= -1
             self.np.setH(self.np.getH() + 180)
@@ -296,27 +295,6 @@ class Mob:
             self.np.setH(90)
 
         self.np.setPos(pos + Vec3(self.direction * self.speed * dt, 0, 0))
-
-
-class Weapon:
-    def __init__(self, config: Config, loader, owner_actor: Actor, owner_np):
-        self.loader = loader
-        self.config = config
-        self.owner_actor = owner_actor
-        self.owner_np = owner_np
-
-        self.np = owner_np.attachNewNode('weapon_node')
-        self.model = self.loader.loadModel(self.config.sword_model)
-        self.model.reparentTo(self.np)
-        self.model.setScale(1.0)
-
-    def update(self):
-        joint = self.owner_actor.exposeJoint(None, 'modelRoot', 'mixamorig:RightHand')
-        if not joint:
-            return
-        h, p, r = self.owner_np.getHpr()[0] + joint.getHpr()[0] - 90, -joint.getHpr()[1], joint.getHpr()[2] + 90
-        self.np.setHpr(h, p, r)
-        self.np.setPos(self.owner_np, joint.getPos(self.owner_np) + Vec3(0.0, -0.5, -0.3))
 
 
 class World:
@@ -362,7 +340,7 @@ class Game(ShowBase):
             enable_shadows=True,
             use_emission_maps=True,
             use_330=True,
-            env_map="enviro.hdr"
+            env_map="cubemap.env"
         )
 
         props = WindowProperties()
@@ -391,8 +369,6 @@ class Game(ShowBase):
 
         self.player = Character(self.config, self.render, self.loader, self.physics)
 
-        self.weapon = Weapon(self.config, self.loader, self.player.actor, self.player.np)
-
         self.mob = [Mob(self.config, self.render, self.loader, self.physics), Mob(self.config, self.render, self.loader, self.physics, Vec3(10, 0, 7), 1)]
 
         self.accept('z', self.player.set_key, ['z', True])
@@ -420,7 +396,6 @@ class Game(ShowBase):
         self.player.update(dt)
         for m in self.mob:
             m.update(dt)
-        self.weapon.update()
 
         camx, camy, camz = self.camera.getPos()
         player_x = self.player.np.getPos()[0]
