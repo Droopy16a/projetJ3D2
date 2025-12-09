@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict
 import math
+import random
 
 from direct.showbase.ShowBase import ShowBase
 from panda3d.core import (
@@ -35,7 +36,7 @@ ConfigVariableString("bullet-filter-algorithm").setValue("groups-mask")
 
 @dataclass
 class Config:
-    window_title: str = "DZ jeu - Refactor"
+    window_title: str = "DZ jeu"
     gravity: Vec3 = Vec3(0, 0, -9.81)
     player_mass: float = 70.0
     mob_mass: float = 30.0
@@ -53,6 +54,9 @@ class Config:
     mob_model: str = "models/mobA.glb"
     cube_model: str = "models/box.glb"
     sword_model: str = "models/sword.glb"
+
+
+CAMERA = None
 
 def bit(gid: int) -> BitMask32:
     return BitMask32.bit(gid)
@@ -107,6 +111,7 @@ class Character:
         self.IDLE_ANIM = 'idle' if 'idle' in anims else (next(iter(anims)) if anims else None)
         self.WALK_ANIM = 'running' if 'running' in anims else self.IDLE_ANIM
         self.JUMP_ANIM = 'jumping' if 'jumping' in anims else None
+        self.ATTACK_ANIM = 'atack' if 'atack' in anims else None
 
         if self.IDLE_ANIM:
             self.actor.loop(self.IDLE_ANIM)
@@ -115,6 +120,7 @@ class Character:
         self.is_moving = False
         self.is_jumping = False
         self.is_charging_jump = False
+        self.is_attacking = False
 
         self.jump_crouch_frame = 10
         self.jump_fly_frame = 25
@@ -125,6 +131,28 @@ class Character:
 
     def set_key(self, key: str, value: bool):
         self.keys[key] = value
+
+    def perform_attack(self):
+        if self.is_attacking:
+            return
+
+        if not self.ATTACK_ANIM:
+            return
+
+        self.is_attacking = True
+        self.actor.stop()
+
+        attack_interval = ActorInterval(self.actor, self.ATTACK_ANIM)
+
+        def finish():
+            self.is_attacking = False
+            if self.is_moving and self.WALK_ANIM:
+                self.actor.loop(self.WALK_ANIM)
+            elif self.IDLE_ANIM:
+                self.actor.loop(self.IDLE_ANIM)
+
+        self.attack_seq = Sequence(attack_interval, Func(finish))
+        self.attack_seq.start()
 
     def start_jump_charge(self):
         if self.on_ground() and not self.is_jumping:
@@ -190,7 +218,7 @@ class Character:
             self.np.setH(angle)
 
             current = self.actor.getCurrentAnim()
-            if on_ground and not self.is_jumping and not self.is_charging_jump:
+            if on_ground and not self.is_jumping and not self.is_charging_jump and not self.is_attacking:
                 if current != self.WALK_ANIM and self.WALK_ANIM in self.actor.getAnimNames():
                     self.actor.stop()
                     self.actor.loop(self.WALK_ANIM)
@@ -200,9 +228,9 @@ class Character:
             vel.setY(0)
             self.node.setLinearVelocity(vel)
 
-            if on_ground and not self.is_jumping and not self.is_charging_jump:
+            if on_ground and not self.is_jumping and not self.is_charging_jump and not self.is_attacking:
                 current = self.actor.getCurrentAnim()
-                if self.IDLE_ANIM and current != self.IDLE_ANIM and current != self.JUMP_ANIM:
+                if self.IDLE_ANIM and current != self.IDLE_ANIM:
                     self.actor.stop()
                     self.actor.loop(self.IDLE_ANIM)
                 self.is_moving = False
@@ -250,6 +278,7 @@ class Mob:
 
 
     def update(self, dt: float):
+        global CAMERA
         forward = self.np.getQuat().getForward()
         forward.normalize()
 
@@ -260,8 +289,8 @@ class Mob:
         from_pos = start + forward * 0.5
         to_pos   = start + forward * -0.5
 
-        from_hitzone = start + forward * -3.5
-        to_hitzone   = start + forward * 0.5
+        from_hitzone = start + forward * 0.5
+        to_hitzone   = start + forward * -3.5
 
         result = self.physics.world.rayTestClosest(from_pos, to_pos)
         hitzone = self.physics.world.rayTestClosest(from_hitzone, to_hitzone)
@@ -286,15 +315,23 @@ class Mob:
             self.direction *= -1
             self.np.setH(self.np.getH() + 180)
 
+        if current == 'atack':
+            ctrl = self.actor.getAnimControl('atack')
+            if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
+                self.actor.loop('run')
+            if ctrl and ctrl.getFrame() == 17:
+                CAMERA.shake_camera(0.3, 0.2)
 
+        
         if pos.x > self.bounds[1]:
             self.direction = -1
             self.np.setH(-90)
         elif pos.x < self.bounds[0]:
             self.direction = 1
             self.np.setH(90)
-
-        self.np.setPos(pos + Vec3(self.direction * self.speed * dt, 0, 0))
+        
+        if current != 'atack':
+            self.np.setPos(pos + Vec3(self.direction * self.speed * dt, 0, 0))
 
 
 class World:
@@ -331,6 +368,7 @@ class World:
 
 class Game(ShowBase):
     def __init__(self, config: Config = Config()):
+        global CAMERA
         super().__init__()
         self.config = config
         self.disableMouse()
@@ -347,6 +385,7 @@ class Game(ShowBase):
         props.setTitle(self.config.window_title)
         self.win.requestProperties(props)
 
+        CAMERA = self
         self.camera.setPos(0, -40, 6)
         self.camera.setHpr(0, 0, 0)
 
@@ -381,6 +420,7 @@ class Game(ShowBase):
         self.accept('d-up', self.player.set_key, ['d', False])
         self.accept('space', self.player.start_jump_charge)
         self.accept('space-up', self.player.perform_jump)
+        self.accept('mouse1', self.player.perform_attack)
 
         self.taskMgr.add(self._task_physics, 'physics_task')
         self.taskMgr.add(self._task_update, 'update_task')
@@ -389,6 +429,32 @@ class Game(ShowBase):
         dt = globalClock.getDt()
         self.physics.step(dt)
         return task.cont
+    
+    def shake_camera(self, intensity: float = 0.5, duration: float = 0.5):
+        original_pos = self.camera.getPos(self.render)
+
+        self.taskMgr.remove("camera_shake_task")
+
+        def shake_task(task):
+            elapsed = task.time
+
+            if elapsed >= duration:
+                self.camera.setPos(self.render, original_pos)
+                return task.done
+
+            fade = 1 - (elapsed / duration)
+
+            offset = Vec3(
+                random.uniform(-1, 1) * intensity * fade,
+                random.uniform(-1, 1) * intensity * fade,
+                random.uniform(-1, 1) * intensity * fade
+            )
+
+            self.camera.setPos(self.render, original_pos + offset)
+            return task.cont
+
+        self.taskMgr.add(shake_task, "camera_shake_task")
+
 
     def _task_update(self, task):
         dt = globalClock.getDt()
