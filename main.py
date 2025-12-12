@@ -20,7 +20,7 @@ from panda3d.core import (
 )
 
 import simplepbr
-from assets.global_state import GLOBAL_STATE
+from assets.Global_state import GLOBAL_STATE
 
 
 loadPrcFileData("", "win-size 1920 1080")

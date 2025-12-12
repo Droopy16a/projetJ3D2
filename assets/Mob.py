@@ -13,7 +13,7 @@ from panda3d.bullet import (
 )
 from assets.Config import Config
 from assets.PhysicsManager import PhysicsManager
-from assets.global_state import GLOBAL_STATE
+from assets.Global_state import GLOBAL_STATE
 
 def bit(gid: int) -> BitMask32:
     return BitMask32.bit(gid)
