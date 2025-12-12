@@ -14,7 +14,7 @@ class Config:
     debug_physics: bool = True
 
     speed: float = 10.0
-    jump_base: float = 5.0
+    jump_base: float = 7.0
     jump_charge_max: float = 10.0
     jump_charge_rate: float = 0.1
 

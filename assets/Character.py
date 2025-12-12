@@ -6,6 +6,7 @@ import math
 from panda3d.core import (
     Vec3,
     TransformState, 
+    LineSegs,
 )
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
@@ -31,7 +32,8 @@ class Character:
         self.node.setMass(config.player_mass)
         self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 1)))
         self.node.setAngularFactor(Vec3(0, 0, 0))
-        
+        self.node.setDeactivationEnabled(False)
+
         self.np = render.attachNewNode(self.node)
         self.np.setPos(start_pos)
         self.actor.reparentTo(self.np)
@@ -59,6 +61,10 @@ class Character:
         self.charge = self.config.jump_base
 
         self.speed = config.speed
+
+        self.ray_vis = LineSegs()
+        self.ray_vis.setThickness(2)
+        self.ray_node = self.render.attachNewNode(self.ray_vis.create())
 
     def set_key(self, key: str, value: bool):
         self.keys[key] = value
@@ -103,10 +109,18 @@ class Character:
         if self.is_charging_jump and self.on_ground():
             self.is_charging_jump = False
             self.is_jumping = True
+            
+            move_vec = Vec3(0, 0, 1)
+            move_vec.normalize()
 
-            vel = self.node.getLinearVelocity()
-            vel.setZ(self.charge)
-            self.node.setLinearVelocity(vel)
+            velocity = move_vec * self.charge
+            
+            current_x = self.node.getLinearVelocity().x
+            current_y = self.node.getLinearVelocity().y
+            velocity.setX(current_x)
+            velocity.setY(current_y)
+            self.node.setLinearVelocity(velocity)
+
             self.charge = self.config.jump_base
 
             if self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
@@ -120,8 +134,19 @@ class Character:
 
     def on_ground(self) -> bool:
         from_pos = self.np.getPos() + Vec3(0, 0, 0.5)
-        to_pos = self.np.getPos() - Vec3(0, 0, 1.5)
+        to_pos = self.np.getPos() - Vec3(0, 0, 0.75)
         result = self.physics.world.rayTestClosest(from_pos, to_pos)
+
+        self.ray_vis.reset()
+        self.ray_vis.setThickness(2)
+
+        self.ray_vis.setColor(1, 0, 0, 1)
+        self.ray_vis.moveTo(from_pos)
+        self.ray_vis.drawTo(to_pos)
+
+        self.ray_node.removeNode()
+        self.ray_node = self.render.attachNewNode(self.ray_vis.create())
+
         return result.hasHit()
 
     def update(self, dt: float):

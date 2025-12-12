@@ -38,7 +38,8 @@ class Game(ShowBase):
             enable_shadows=True,
             use_emission_maps=True,
             use_330=True,
-            env_map="./assets/env/cubemap.env"
+            env_map="./assets/env/cubemap.env",
+            shadow_bias=0.005
         )
 
         props = WindowProperties()
@@ -80,6 +81,7 @@ class Game(ShowBase):
         self.accept('d-up', self.player.set_key, ['d', False])
         self.accept('space', self.player.start_jump_charge)
         self.accept('space-up', self.player.perform_jump)
+
         self.accept('mouse1', self.player.perform_attack)
 
         self.taskMgr.add(self._task_physics, 'physics_task')
