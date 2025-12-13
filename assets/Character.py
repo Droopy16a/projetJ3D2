@@ -12,10 +12,12 @@ from direct.actor.Actor import Actor
 from panda3d.bullet import (
     BulletRigidBodyNode,
     BulletCapsuleShape,
+    BulletBoxShape,
 )
 from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 from assets.Config import Config
 from assets.PhysicsManager import PhysicsManager
+from assets.Global_functions import apply_bullet_hitboxes
 
 class Character:
     def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 5)):
@@ -26,13 +28,36 @@ class Character:
 
         self.actor = Actor(self.config.player_model)
         self.actor.reparentTo(render)
+        # apply_bullet_hitboxes(self.actor, physics.world)
 
         shape = BulletCapsuleShape(0.75, 3.0, 2)
         self.node = BulletRigidBodyNode('Character')
         self.node.setMass(config.player_mass)
         self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 2.25)))
         self.node.setAngularFactor(Vec3(0, 0, 0))
+        self.node.setLinearFactor(Vec3(1, 0, 1))
         self.node.setDeactivationEnabled(False)
+
+        # np = self.actor.find("*/Object_4.007")
+
+        # parent = np.get_parent()
+
+        # if not parent.node().is_of_type(BulletRigidBodyNode):
+        #     min_bound, max_bound = np.get_tight_bounds()
+        #     if not (min_bound is None or max_bound is None):
+        #         center = (min_bound + max_bound) * 0.5
+        #         size = (max_bound - min_bound) * 0.5
+
+        #         shape = BulletBoxShape(Vec3(size))
+
+        #         body = BulletRigidBodyNode(f"hitbox_{np.get_name()}")
+        #         body.set_kinematic(True)
+        #         body.add_shape(shape, TransformState.make_pos(center))
+
+        #         body_np = parent.attach_new_node(body)
+        #         body_np.set_transform(np.get_transform(parent))
+
+        #         self.physics.world.attach(body)
 
         self.np = render.attachNewNode(self.node)
         self.np.setPos(start_pos)

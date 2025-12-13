@@ -30,6 +30,7 @@ class Mob:
         self.node.setMass(config.mob_mass)
         self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 1)))
         self.node.setAngularFactor(Vec3(0, 0, 0))
+        self.node.setLinearFactor(Vec3(1, 0, 1))
 
         self.np = render.attachNewNode(self.node)
         self.np.setPos(start_pos)

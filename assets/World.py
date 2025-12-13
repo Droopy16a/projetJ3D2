@@ -30,19 +30,22 @@ class World:
 
         self.level_model = loader.loadModel(self.config.level_model)
         self.level_model.reparentTo(render)
-        self.level_model.setScale(2.5)
-        self.level_model.setPos(0, 0, -10)
-        self.level_model.setHpr(270, 0, 0)
-        apply_bullet_hitboxes(self.level_model, self.physics.world, ignore = ["Icosphere.001"])
+        self.level_model.setScale(0.5)
+        self.level_model.setPos(0, 0, 0)
+        self.level_model.setHpr(0, 0, 0)
+        apply_bullet_hitboxes(self.level_model, self.physics.world, ignore = ["mur", "tonneau", "box", "rid", "fontaine"])
 
 
         cube_shape = BulletBoxShape(Vec3(1, 1, 1))
         cube_node = BulletRigidBodyNode('Cube')
         cube_node.setMass(self.config.cube_mass)
         cube_node.addShape(cube_shape, TransformState.makePos(Vec3(0, 0, 1)))
+        cube_node.setLinearFactor(Vec3(1, 0, 1))
+        cube_node.setAngularFactor(Vec3(0, 1, 0))
         self.cube_np = render.attachNewNode(cube_node)
         self.cube_np.setPos(2, 0, 0)
         physics.attach(cube_node, self.cube_np)
         cube_vis = loader.loadModel(self.config.cube_model)
         cube_vis.reparentTo(self.cube_np)
         cube_vis.setScale(1)
+        

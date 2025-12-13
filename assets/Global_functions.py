@@ -11,6 +11,7 @@ from panda3d.bullet import (
 
 def apply_bullet_hitboxes(model: NodePath, bullet_world, ignore = []):
     for np in model.find_all_matches("**/+GeomNode"):
+        print("Processing node:", np.get_name())
         if np.get_name() in ignore:
             continue
 
