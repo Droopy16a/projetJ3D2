@@ -1,121 +1,141 @@
-from direct.showbase.ShowBase import ShowBase
-from panda3d.core import Vec3, DirectionalLight, AmbientLight, Vec4, WindowProperties, loadPrcFileData
-from direct.actor.Actor import Actor
-from panda3d.bullet import BulletWorld, BulletRigidBodyNode, BulletBoxShape
-from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
-import math
+from __future__ import annotations
 
 import asyncio
-import websockets
-import threading
-import queue
 import json
-import time
+import random
+import threading
+import websockets
+from typing import Optional
 
-import sys
-sys.path.append("./panda3d-simplepbr/")
+from assets.Character import Character
+from assets.Config import Config
+from assets.Mob import Mob
+from assets.World import World
+from assets.PhysicsManager import PhysicsManager
+
+from direct.showbase.ShowBase import ShowBase
+from panda3d.core import (
+    Vec3,
+    DirectionalLight,
+    AmbientLight,
+    Vec4,
+    WindowProperties,
+    loadPrcFileData,
+    ConfigVariableString,
+)
+
 import simplepbr
+from assets.Global_state import GLOBAL_STATE
+import socket
+
 
 loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "basic-shaders-only #f")
+ConfigVariableString("bullet-filter-algorithm").setValue("groups-mask")
+
 
 class NetworkClient:
-    """
-    Connects to a websocket server, sends local state, receives remote states.
-    Uses a thread-safe queue to pass incoming messages to main thread.
-    """
-    def __init__(self, uri, incoming_queue, send_interval=0.05):
-        self.uri = uri
-        self.incoming = incoming_queue
-        self.send_interval = send_interval
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._stop_event = threading.Event()
-        self._outgoing_queue = queue.Queue() 
-        self._connected = False
-
-    def start(self):
-        self._thread.start()
-
-    def stop(self):
-        self._stop_event.set()
-
-    def send(self, data):
-        """Called by main thread to send a JSON-serializable object to server."""
+    """Handles WebSocket communication with the relay server"""
+    
+    def __init__(self, server_url: str = "ws://localhost:8765"):
+        self.server_url = server_url
+        self.ws = None
+        self.is_connected = False
+        self.player_id = None
+        self.message_queue = asyncio.Queue()
+        self.loop = None
+        self.thread = None
+        
+    async def connect(self):
+        """Connect to the relay server"""
         try:
-            self._outgoing_queue.put_nowait(data)
-        except queue.Full:
-            pass
-
-    def _run(self):
-        """Thread target — runs asyncio event loop and websocket connection."""
-        asyncio.run(self._async_main())
-
-    async def _async_main(self):
-        try:
-            async with websockets.connect(self.uri) as ws:
-                self._connected = True
-                recv_task = asyncio.create_task(self._recv_loop(ws))
-                send_task = asyncio.create_task(self._send_loop(ws))
-                done, pending = await asyncio.wait(
-                    [recv_task, send_task],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                for t in pending:
-                    t.cancel()
+            self.ws = await websockets.connect(self.server_url)
+            self.is_connected = True
+            print(f"Connected to server at {self.server_url}")
+            await self._listen()
         except Exception as e:
-            print("Network error:", e)
-        finally:
-            self._connected = False
-
-    async def _recv_loop(self, ws):
+            print(f"Connection failed: {e}")
+            self.is_connected = False
+    
+    async def _listen(self):
+        """Listen for incoming messages from server"""
         try:
-            async for msg in ws:
-                # parse incoming JSON and put on queue
-                try:
-                    data = json.loads(msg)
-                    self.incoming.put_nowait(data)
-                except Exception:
-                    pass
-                if self._stop_event.is_set():
-                    break
-        except Exception:
-            pass
-
-    async def _send_loop(self, ws):
-        """Periodically send messages from outgoing queue and also a heartbeat period."""
-        while not self._stop_event.is_set():
+            async for msg in self.ws:
+                await self.message_queue.put(msg)
+        except websockets.exceptions.ConnectionClosed:
+            print("Connection closed by server")
+            self.is_connected = False
+        except Exception as e:
+            print(f"Listen error: {e}")
+            self.is_connected = False
+    
+    async def send_message(self, data: dict):
+        """Send a message to the server"""
+        if self.ws and self.is_connected:
             try:
-                last = None
-                while True:
-                    try:
-                        last = self._outgoing_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                if last is not None:
-                    try:
-                        await ws.send(json.dumps(last))
-                    except Exception:
-                        pass
-                else:
-                    try:
-                        await ws.send(json.dumps({"type": "heartbeat", "t": time.time()}))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            await asyncio.sleep(self.send_interval)
+                await self.ws.send(json.dumps(data))
+            except Exception as e:
+                print(f"Send error: {e}")
+    
+    def get_message(self) -> Optional[dict]:
+        """Get a message from the queue (non-blocking)"""
+        try:
+            msg = self.message_queue.get_nowait()
+            return json.loads(msg)
+        except asyncio.QueueEmpty:
+            return None
+    
+    def start(self):
+        """Start the async event loop in a background thread"""
+        def run_loop():
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(self.connect())
+        
+        self.thread = threading.Thread(target=run_loop, daemon=True)
+        self.thread.start()
+        
+        # Wait for connection (with timeout)
+        import time
+        timeout = time.time() + 3
+        while not self.is_connected and time.time() < timeout:
+            time.sleep(0.1)
+        
+        if not self.is_connected:
+            print("Warning: Could not connect to server. Running in single-player mode.")
+    
+    def send_async(self, data: dict):
+        """Queue a message to send (thread-safe)"""
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(self.send_message(data), self.loop)
+    
+    def stop(self):
+        """Stop the network client"""
+        if self.loop:
+            self.loop.call_soon_threadsafe(self.loop.stop)
+
 
 class Game(ShowBase):
-    def __init__(self):
+    def __init__(self, config: Config = Config(), is_player1: bool = True, server_url: str = "ws://localhost:8765"):
         super().__init__()
+        self.config = config
+        self.is_player1 = is_player1
         self.disableMouse()
-        simplepbr.init(use_normal_maps=True, use_emission_maps=True, enable_shadows=True)
+
+        simplepbr.init(
+            enable_shadows=True,
+            use_330=True,
+            env_map="./assets/env/cubemap.env",
+            calculate_normalmap_blue=True,
+        )
 
         props = WindowProperties()
-        props.setTitle("DZ jeu (networked)")
+        title = f"{self.config.window_title} - {'Player 1' if is_player1 else 'Player 2 (Mob Control)'}"
+        props.setTitle(title)
         self.win.requestProperties(props)
 
-        self.camera.setPos(0, -30, 6)
+        GLOBAL_STATE.set_camera(self)
+        self.camera.setPos(0, -40, 6)
         self.camera.setHpr(0, 0, 0)
 
         dlight = DirectionalLight('dlight')
@@ -129,297 +149,166 @@ class Game(ShowBase):
         alnp = self.render.attachNewNode(alight)
         self.render.setLight(alnp)
 
-        self.physics_world = BulletWorld()
-        self.physics_world.setGravity(Vec3(0, 0, -9.81))
+        self.physics = PhysicsManager(self.config.gravity, self.render)
+        if self.config.debug_physics:
+            self.physics.enable_debug()
 
-        ground_shape = BulletBoxShape(Vec3(50, 50, 1))
-        ground_node = BulletRigidBodyNode('Ground')
-        ground_node.addShape(ground_shape)
-        ground_node.setMass(0)
-        ground_np = self.render.attachNewNode(ground_node)
-        ground_np.setPos(0, 0, -2)
-        self.physics_world.attachRigidBody(ground_node)
+        self.world = World(self.config, self.render, self.loader, self.physics)
 
-        char_shape = BulletBoxShape(Vec3(0.5, 0.5, 1))
-        self.char_node = BulletRigidBodyNode('Character')
-        self.char_node.setMass(70)
-        self.char_node.addShape(char_shape)
-        self.char_node.setAngularFactor(Vec3(0, 0, 0))
-        self.char_np = self.render.attachNewNode(self.char_node)
-        self.char_np.setPos(0, 0, 5)
-        self.physics_world.attachRigidBody(self.char_node)
+        # Create both player and mob for local display
+        self.player = Character(self.config, self.render, self.loader, self.physics)
+        self.mob = Mob(self.config, self.render, self.loader, self.physics)
 
-        cube_shape = BulletBoxShape(Vec3(1, 1, 1))
-        cube_node = BulletRigidBodyNode('Cube')
-        cube_node.setMass(10)
-        cube_node.addShape(cube_shape)
-        cube_np = self.render.attachNewNode(cube_node)
-        cube_np.setPos(2, 0, 0)
-        self.physics_world.attachRigidBody(cube_node)
-        cube_vis = self.loader.loadModel("models/box.glb")
-        cube_vis.reparentTo(cube_np)
-        cube_vis.setScale(1)
+        # Setup network client
+        self.network = NetworkClient(server_url)
+        self.network.start()
 
-        self.character = Actor("models/perso5.glb")
-        self.character.reparentTo(self.char_np)
-        self.character.setScale(1.0)
+        if is_player1:
+            # Player 1 controls the character
+            self.accept('z', self.player.set_key, ['z', True])
+            self.accept('z-up', self.player.set_key, ['z', False])
+            self.accept('s', self.player.set_key, ['s', True])
+            self.accept('s-up', self.player.set_key, ['s', False])
+            self.accept('q', self.player.set_key, ['q', True])
+            self.accept('q-up', self.player.set_key, ['q', False])
+            self.accept('d', self.player.set_key, ['d', True])
+            self.accept('d-up', self.player.set_key, ['d', False])
+            self.accept('space', self.player.start_jump_charge)
+            self.accept('space-up', self.player.perform_jump)
+            self.accept('mouse1', self.player.perform_attack)
 
-        anims = list(self.character.getAnimNames())
-        print("Animations:", anims)
+        self.taskMgr.add(self._task_physics, 'physics_task')
+        self.taskMgr.add(self._task_update, 'update_task')
+        self.taskMgr.add(self._task_network, 'network_task')
 
-        self.IDLE_ANIM = "idle"
-        self.WALK_ANIM = "runvrai"
-        self.JUMP_ANIM = "jumpstatvrai"
-
-        if self.IDLE_ANIM in anims:
-            self.character.loop(self.IDLE_ANIM)
-        elif len(anims) > 0:
-            print(f"[WARN] idle animation not found, looping {anims[0]}")
-            self.character.loop(anims[0])
-        else:
-            print("[WARN] no animations found in model.")
-
-        self.remote_np = self.render.attachNewNode("remote_root")
-        self.remote_character = Actor("models/perso5.glb")
-        self.remote_character.reparentTo(self.remote_np)
-        self.remote_character.setScale(1.0)
-        if self.IDLE_ANIM in anims:
-            self.remote_character.loop(self.IDLE_ANIM)
-
-        self.speed = 10.0
-        self.jump_strength = 7.0
-        self.keys = {"z": False, "q": False, "s": False, "d": False}
-        self.is_moving = False
-        self.is_jumping = False
-        self.is_charging_jump = False
-        self.jump_crouch_frame = 10
-        self.jump_fly_frame = 25
-        self.jump_sequence = None
-        self.charge = 0
-
-        self.accept("z", self.set_key, ["z", True])
-        self.accept("z-up", self.set_key, ["z", False])
-        self.accept("s", self.set_key, ["s", True])
-        self.accept("s-up", self.set_key, ["s", False])
-        self.accept("q", self.set_key, ["q", True])
-        self.accept("q-up", self.set_key, ["q", False])
-        self.accept("d", self.set_key, ["d", True])
-        self.accept("d-up", self.set_key, ["d", False])
-        self.accept("space", self.start_jump_charge)
-        self.accept("space-up", self.perform_jump)
-
-        self.taskMgr.add(self.update_physics, "update_physics")
-        self.taskMgr.add(self.update, "updateTask")
-
-        self.net_queue = queue.Queue()
-        self.net = NetworkClient("ws://localhost:8765", self.net_queue, send_interval=0.05)
-        self.net.start()
-
-        self.last_send = 0.0
-        self.send_period = 0.05
-
-        self.remote_state = {}
-
-        self.taskMgr.add(self.apply_network_updates, "apply_network_updates")
-
-        self.accept("escape", self.on_exit)
-        self.accept("window-event", self.on_exit_window)
-
-    def on_exit_window(self, window):
-        if window is None:
-            self.on_exit()
-
-    def on_exit(self, *args):
-        print("Shutting down network...")
-        try:
-            self.net.stop()
-        except Exception:
-            pass
-        import sys
-        sys.exit(0)
-
-    def update_physics(self, task):
+    def _task_physics(self, task):
         dt = globalClock.getDt()
-        self.physics_world.doPhysics(dt, 10, 0.008)
+        self.physics.step(dt)
         return task.cont
 
-    def set_key(self, key, value):
-        self.keys[key] = value
-
-    def is_on_ground(self):
-        from_pos = self.char_np.getPos() + Vec3(0, 0, 0.5)
-        to_pos = self.char_np.getPos() - Vec3(0, 0, 1.5)
-        result = self.physics_world.rayTestClosest(from_pos, to_pos)
-        if result.hasHit():
-            hit_node = result.getNode()
-            if hit_node.getName() == "Ground" or hit_node.getName() == "Cube":
-                return True
-        return False
-
-    def start_jump_charge(self):
-        if self.is_on_ground() and not self.is_jumping:
-            self.is_charging_jump = True
-            self.character.stop()
-            if self.JUMP_ANIM in self.character.getAnimNames():
-                if self.jump_sequence:
-                    self.jump_sequence.finish()
-
-                jump_crouch = ActorInterval(
-                    self.character,
-                    self.JUMP_ANIM,
-                    startFrame=0,
-                    endFrame=self.jump_crouch_frame
-                )
-
-                run_crouch = ActorInterval(
-                    self.character,
-                    self.WALK_ANIM,
-                    startFrame=0
-                )
-
-                crouch_func = Func(self.character.pose, self.JUMP_ANIM, self.jump_crouch_frame + 1)
-                self.crouch_sequence = Sequence(jump_crouch, crouch_func) if not self.is_moving else run_crouch
-
-                self.crouch_sequence.start()
-
-    def perform_jump(self):
-        if self.is_charging_jump and self.is_on_ground():
-            self.is_charging_jump = False
-            self.is_jumping = True
-
-            vel = self.char_node.getLinearVelocity()
-            vel.setZ(self.charge)
-            self.char_node.setLinearVelocity(vel)
-            self.charge = 0
-
-            if self.JUMP_ANIM in self.character.getAnimNames():
-                if self.jump_sequence:
-                    self.jump_sequence.finish()
-
-                jump_anim = ActorInterval(
-                    self.character,
-                    self.JUMP_ANIM,
-                    startFrame=self.jump_crouch_frame,
-                    endFrame=self.jump_fly_frame
-                )
-
-                jump_anim_end = ActorInterval(
-                    self.character,
-                    self.JUMP_ANIM,
-                    startFrame=self.jump_fly_frame + 1
-                )
-
-                finish_func = Func(self.character.pose, self.JUMP_ANIM, self.jump_fly_frame + 1)
-                self.jump_sequence = Sequence(jump_anim, finish_func)
-                self.land = Sequence(finish_func, jump_anim_end)
-                self.jump_sequence.start()
-
-    def update(self, task):
-        dt = globalClock.getDt()
-        move_x = float(self.keys["d"]) - float(self.keys["q"])
-        move_y = float(self.keys["z"]) - float(self.keys["s"])
-        move_vec = Vec3(move_x, move_y, 0)
-        self.camera.setPos(self.char_np.getPos()[0], *tuple(self.camera.getPos())[1:])
-
-        on_ground = self.is_on_ground()
-
-        if self.is_charging_jump:
-            if self.charge < 10:
-                self.charge += 1
-
-        if move_vec.length() > 0:
-            self.is_moving = True
-            move_vec.normalize()
-
-            velocity = move_vec * self.speed
-            current_z = self.char_node.getLinearVelocity().z
-            velocity.setZ(current_z)
-            self.char_node.setLinearVelocity(velocity)
-
-            angle = math.degrees(math.atan2(move_x, -move_y))
-            self.char_np.setH(angle)
-
-            current = self.character.getCurrentAnim()
-            if on_ground and not self.is_jumping and not self.is_charging_jump:
-                if current != self.WALK_ANIM and self.WALK_ANIM in self.character.getAnimNames():
-                    self.character.stop()
-                    self.character.loop(self.WALK_ANIM)
-        else:
-            vel = self.char_node.getLinearVelocity()
-            vel.setX(0)
-            vel.setY(0)
-            self.char_node.setLinearVelocity(vel)
-
-            if on_ground and not self.is_jumping and not self.is_charging_jump:
-                current = self.character.getCurrentAnim()
-                if current != self.IDLE_ANIM and self.IDLE_ANIM in self.character.getAnimNames() and current != self.JUMP_ANIM:
-                    self.character.stop()
-                    self.character.loop(self.IDLE_ANIM)
-                self.is_moving = False
-
-        if on_ground and self.is_jumping:
-            self.is_jumping = False
-            if not self.is_charging_jump:
-                self.character.play(self.JUMP_ANIM, fromFrame=self.jump_fly_frame + 1)
-
-        elif not on_ground:
-            self.is_jumping = True
-
-        now = time.time()
-        if now - self.last_send > self.send_period:
-            self.last_send = now
-            self.send_own_state()
-
-        return task.cont
-
-    def send_own_state(self):
-        pos = self.char_np.getPos()
-        hpr = self.char_np.getHpr()
-        anim = self.character.getCurrentAnim() or ""
-        data = {
-            "type": "state",
-            "pos": [pos.x, pos.y, pos.z],
-            "hpr": [hpr.x, hpr.y, hpr.z],
-            "anim": anim,
-            "t": time.time(),
-        }
-        self.net.send(data)
-
-    def apply_network_updates(self, task):
-        processed = 0
-        while processed < 10:
-            try:
-                msg = self.net_queue.get_nowait()
-            except queue.Empty:
+    def _task_network(self, task):
+        """Handle network messages"""
+        if not self.network.is_connected:
+            return task.cont
+        
+        while True:
+            msg = self.network.get_message()
+            if msg is None:
                 break
-            processed += 1
-            if not isinstance(msg, dict):
-                continue
-            # ignore heartbeats
-            if msg.get("type") != "state":
-                continue
-            self.remote_state = msg
+            
+            self._process_network_message(msg)
+        
+        # Send local state
+        if self.is_player1:
+            self._send_player_state()
+        else:
+            self._send_mob_state()
+        
+        return task.cont
 
-        if self.remote_state:
-            try:
-                p = self.remote_state.get("pos", [0,0,0])
-                h = self.remote_state.get("hpr", [0,0,0])
-                anim = self.remote_state.get("anim", "")
-                self.remote_np.setPos(p[0], p[1], p[2])
-                self.remote_np.setH(h[0])
-                current = self.remote_character.getCurrentAnim()
-                if anim and anim != current and anim in self.remote_character.getAnimNames():
-                    if anim == self.WALK_ANIM:
-                        self.remote_character.loop(anim)
-                    elif anim == self.IDLE_ANIM:
-                        self.remote_character.loop(anim)
-                    else:
-                        self.remote_character.play(anim)
-            except Exception:
-                pass
+    def _send_player_state(self):
+        """Send player state to other clients"""
+        pos = self.player.np.getPos()
+        vel = self.player.node.getLinearVelocity()
+        
+        state = {
+            "type": "player_update",
+            "pos": [pos.x, pos.y, pos.z],
+            "vel": [vel.x, vel.y, vel.z],
+            "h": self.player.np.getH(),
+            "anim": self.player.actor.getCurrentAnim() if self.player.actor else None,
+        }
+        self.network.send_async(state)
+
+    def _send_mob_state(self):
+        """Send mob state to other clients"""
+        pos = self.mob.np.getPos()
+        vel = self.mob.node.getLinearVelocity()
+        
+        state = {
+            "type": "mob_update",
+            "pos": [pos.x, pos.y, pos.z],
+            "vel": [vel.x, vel.y, vel.z],
+            "h": self.mob.np.getH(),
+            "anim": self.mob.actor.getCurrentAnim() if self.mob.actor else None,
+        }
+        self.network.send_async(state)
+
+    def _process_network_message(self, msg: dict):
+        """Process incoming network message"""
+        msg_type = msg.get("type")
+        
+        if msg_type == "player_update" and not self.is_player1:
+            # Update remote player display
+            pos = Vec3(msg["pos"][0], msg["pos"][1], msg["pos"][2])
+            vel = Vec3(msg["vel"][0], msg["vel"][1], msg["vel"][2])
+            
+            self.player.np.setPos(pos)
+            self.player.node.setLinearVelocity(vel)
+            self.player.np.setH(msg["h"])
+            
+            if msg.get("anim") and self.player.actor:
+                if self.player.actor.getCurrentAnim() != msg["anim"]:
+                    self.player.actor.loop(msg["anim"])
+        
+        elif msg_type == "mob_update" and self.is_player1:
+            # Update remote mob display
+            pos = Vec3(msg["pos"][0], msg["pos"][1], msg["pos"][2])
+            vel = Vec3(msg["vel"][0], msg["vel"][1], msg["vel"][2])
+            
+            self.mob.np.setPos(pos)
+            self.mob.node.setLinearVelocity(vel)
+            self.mob.np.setH(msg["h"])
+            
+            if msg.get("anim") and self.mob.actor:
+                if self.mob.actor.getCurrentAnim() != msg["anim"]:
+                    self.mob.actor.loop(msg["anim"])
+
+    def _task_update(self, task):
+        dt = globalClock.getDt()
+
+        if self.is_player1:
+            self.player.update(dt)
+            # Mob updates from network, but still run physics
+            self.mob.update(dt)
+            
+            # Camera follows player
+            camx, camy, camz = self.camera.getPos()
+            player_x = self.player.np.getPos()[0]
+            self.camera.setPos(player_x, camy, camz)
+        else:
+            # Player updates received from network
+            self.player.update(dt)
+            # Mob is controlled locally
+            self.mob.update(dt)
+            
+            # Camera follows mob
+            camx, camy, camz = self.camera.getPos()
+            mob_x = self.mob.np.getPos()[0]
+            self.camera.setPos(mob_x, camy, camz)
 
         return task.cont
 
-if __name__ == "__main__":
-    game = Game()
+
+if __name__ == '__main__':
+    import sys
+    
+    # Determine if this is player 1 or player 2
+    is_player1 = True
+    if len(sys.argv) > 1:
+        is_player1 = sys.argv[1].lower() != "player2"
+    
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))
+    IP = s.getsockname()[0]
+    s.close()
+    
+    server_url = f"ws://{IP}:8765"
+    if len(sys.argv) > 2:
+        server_url = sys.argv[2]
+    
+    print(f"Starting {'Player 1' if is_player1 else 'Player 2 (Mob)'}")
+    print(f"Server: {server_url}")
+    
+    game = Game(is_player1=is_player1, server_url=server_url)
     game.run()

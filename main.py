@@ -34,12 +34,12 @@ class Game(ShowBase):
         self.disableMouse()
 
         simplepbr.init(
-            use_normal_maps=True,
+            # use_normal_maps=True,
             enable_shadows=True,
-            use_emission_maps=True,
+            # use_emission_maps=True,
             use_330=True,
             env_map="./assets/env/cubemap.env",
-            shadow_bias=0.005
+            calculate_normalmap_blue=True,
         )
 
         props = WindowProperties()
@@ -69,7 +69,10 @@ class Game(ShowBase):
 
         self.player = Character(self.config, self.render, self.loader, self.physics)
 
-        self.mob = [Mob(self.config, self.render, self.loader, self.physics), Mob(self.config, self.render, self.loader, self.physics, Vec3(10, 0, 7), 1)]
+        self.mob = [
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(10, 0, 7)), 
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(8, 0, 7))
+        ]
 
         self.accept('z', self.player.set_key, ['z', True])
         self.accept('z-up', self.player.set_key, ['z', False])

@@ -9,7 +9,7 @@ from panda3d.core import (
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
     BulletRigidBodyNode,
-    BulletBoxShape,
+    BulletCapsuleShape,
 )
 from assets.Config import Config
 from assets.PhysicsManager import PhysicsManager
@@ -19,13 +19,13 @@ def bit(gid: int) -> BitMask32:
     return BitMask32.bit(gid)
 
 class Mob:
-    def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 7), index: int = 0):
+    def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 7)):
         self.config = config
         self.render = render
         self.loader = loader
         self.physics = physics
 
-        shape = BulletBoxShape(Vec3(0.5, 0.5, 1))
+        shape = BulletCapsuleShape(0.75, 1.0, 2)
         self.node = BulletRigidBodyNode('mob')
         self.node.setMass(config.mob_mass)
         self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 1)))
@@ -34,6 +34,8 @@ class Mob:
         self.np = render.attachNewNode(self.node)
         self.np.setPos(start_pos)
         physics.attach(self.node, self.np)
+
+        index = GLOBAL_STATE.increase_mob_number()
 
         self.np.setCollideMask(bit(index))
 
@@ -61,7 +63,7 @@ class Mob:
         pos = self.np.getPos()
         start = pos + Vec3(0, 0, 0.5)
         from_pos = start + forward * 0.5
-        to_pos   = start + forward * -0.5
+        to_pos   = start + forward * -0.75
 
         from_hitzone = start + forward * 0.5
         to_hitzone   = start + forward * -3.5

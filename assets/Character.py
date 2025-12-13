@@ -11,7 +11,7 @@ from panda3d.core import (
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
     BulletRigidBodyNode,
-    BulletBoxShape,
+    BulletCapsuleShape,
 )
 from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 from assets.Config import Config
@@ -27,10 +27,10 @@ class Character:
         self.actor = Actor(self.config.player_model)
         self.actor.reparentTo(render)
 
-        shape = BulletBoxShape(Vec3(0.5, 0.5, 1))
+        shape = BulletCapsuleShape(0.75, 3.0, 2)
         self.node = BulletRigidBodyNode('Character')
         self.node.setMass(config.player_mass)
-        self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 1)))
+        self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 2.25)))
         self.node.setAngularFactor(Vec3(0, 0, 0))
         self.node.setDeactivationEnabled(False)
 
