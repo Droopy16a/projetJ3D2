@@ -142,6 +142,16 @@ class Game(ShowBase):
         dlight.setColor(Vec4(0.8, 0.8, 0.8, 1))
         dlnp = self.render.attachNewNode(dlight)
         dlnp.setHpr(45, -45, 0)
+        # enable shadow casting for the directional light and configure the shadow lens
+        try:
+            dlight.setShadowCaster(True, 2048, 2048)
+            lens = dlight.getLens()
+            lens.setFilmSize(50, 50)
+            lens.setNearFar(5, 200)
+        except Exception:
+            # older Panda3D builds or different light implementations may not support these calls
+            pass
+
         self.render.setLight(dlnp)
 
         alight = AmbientLight('alight')

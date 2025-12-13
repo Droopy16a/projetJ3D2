@@ -41,6 +41,7 @@ class Game(ShowBase):
             env_map="./assets/env/cubemap.env",
             calculate_normalmap_blue=True,
         )
+        
 
         props = WindowProperties()
         props.setTitle(self.config.window_title)
@@ -50,10 +51,14 @@ class Game(ShowBase):
         self.camera.setPos(0, -40, 6)
         self.camera.setHpr(0, 0, 0)
 
-        dlight = DirectionalLight('dlight')
+        dlight = DirectionalLight('sun')
         dlight.setColor(Vec4(0.8, 0.8, 0.8, 1))
         dlnp = self.render.attachNewNode(dlight)
         dlnp.setHpr(45, -45, 0)
+
+        dlight.setShadowCaster(True, 2048, 2048)
+
+
         self.render.setLight(dlnp)
 
         alight = AmbientLight('alight')

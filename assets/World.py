@@ -33,6 +33,7 @@ class World:
         self.level_model.setScale(0.5)
         self.level_model.setPos(0, 0, 0)
         self.level_model.setHpr(0, 0, 0)
+
         apply_bullet_hitboxes(self.level_model, self.physics.world, ignore = ["mur", "tonneau", "box", "rid", "fontaine"])
 
 
