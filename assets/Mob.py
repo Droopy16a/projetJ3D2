@@ -19,7 +19,7 @@ def bit(gid: int) -> BitMask32:
     return BitMask32.bit(gid)
 
 class Mob:
-    def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 7)):
+    def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 7), from_pos_bound: int = -20, to_pos_bound: int = 20):
         self.config = config
         self.render = render
         self.loader = loader
@@ -47,7 +47,7 @@ class Mob:
 
         self.speed = 2.5
         self.direction = 1
-        self.bounds = (-20, 20)
+        self.bounds = (from_pos_bound, to_pos_bound)
         self.np.setH(90)
 
         self.ray_vis = LineSegs()

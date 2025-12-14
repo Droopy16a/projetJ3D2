@@ -37,12 +37,9 @@ class Game(ShowBase):
             # use_normal_maps=True,
             enable_shadows=True,
             # use_emission_maps=True,
-            use_330=True,
             env_map="./assets/env/cubemap.env",
-            calculate_normalmap_blue=True,
         )
         
-
         props = WindowProperties()
         props.setTitle(self.config.window_title)
         self.win.requestProperties(props)
@@ -75,8 +72,8 @@ class Game(ShowBase):
         self.player = Character(self.config, self.render, self.loader, self.physics)
 
         self.mob = [
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(10, 0, 7)), 
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(8, 0, 7))
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(45, 0, 7), 30, 70),
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(35, 0, 7), 30, 70)
         ]
 
         self.accept('z', self.player.set_key, ['z', True])

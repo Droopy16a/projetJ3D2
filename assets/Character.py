@@ -7,6 +7,7 @@ from panda3d.core import (
     Vec3,
     TransformState, 
     LineSegs,
+    Shader,
 )
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
@@ -28,6 +29,15 @@ class Character:
 
         self.actor = Actor(self.config.player_model)
         self.actor.reparentTo(render)
+
+        # shader = Shader.load(
+        #     Shader.SL_GLSL,
+        #     "assets/shadow.vert",
+        #     "assets/shadow.frag"
+        # )
+
+        # self.actor.setShader(shader)
+
         # apply_bullet_hitboxes(self.actor, physics.world)
 
         shape = BulletCapsuleShape(0.75, 3.0, 2)

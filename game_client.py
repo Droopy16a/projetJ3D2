@@ -95,7 +95,6 @@ class NetworkClient:
         self.thread = threading.Thread(target=run_loop, daemon=True)
         self.thread.start()
         
-        # Wait for connection (with timeout)
         import time
         timeout = time.time() + 3
         while not self.is_connected and time.time() < timeout:
@@ -142,14 +141,12 @@ class Game(ShowBase):
         dlight.setColor(Vec4(0.8, 0.8, 0.8, 1))
         dlnp = self.render.attachNewNode(dlight)
         dlnp.setHpr(45, -45, 0)
-        # enable shadow casting for the directional light and configure the shadow lens
         try:
             dlight.setShadowCaster(True, 2048, 2048)
             lens = dlight.getLens()
             lens.setFilmSize(50, 50)
             lens.setNearFar(5, 200)
         except Exception:
-            # older Panda3D builds or different light implementations may not support these calls
             pass
 
         self.render.setLight(dlnp)
@@ -165,16 +162,13 @@ class Game(ShowBase):
 
         self.world = World(self.config, self.render, self.loader, self.physics)
 
-        # Create both player and mob for local display
         self.player = Character(self.config, self.render, self.loader, self.physics)
         self.mob = Mob(self.config, self.render, self.loader, self.physics)
 
-        # Setup network client
         self.network = NetworkClient(server_url)
         self.network.start()
 
         if is_player1:
-            # Player 1 controls the character
             self.accept('z', self.player.set_key, ['z', True])
             self.accept('z-up', self.player.set_key, ['z', False])
             self.accept('s', self.player.set_key, ['s', True])
@@ -208,7 +202,6 @@ class Game(ShowBase):
             
             self._process_network_message(msg)
         
-        # Send local state
         if self.is_player1:
             self._send_player_state()
         else:
@@ -249,7 +242,6 @@ class Game(ShowBase):
         msg_type = msg.get("type")
         
         if msg_type == "player_update" and not self.is_player1:
-            # Update remote player display
             pos = Vec3(msg["pos"][0], msg["pos"][1], msg["pos"][2])
             vel = Vec3(msg["vel"][0], msg["vel"][1], msg["vel"][2])
             
@@ -262,7 +254,6 @@ class Game(ShowBase):
                     self.player.actor.loop(msg["anim"])
         
         elif msg_type == "mob_update" and self.is_player1:
-            # Update remote mob display
             pos = Vec3(msg["pos"][0], msg["pos"][1], msg["pos"][2])
             vel = Vec3(msg["vel"][0], msg["vel"][1], msg["vel"][2])
             
@@ -279,20 +270,15 @@ class Game(ShowBase):
 
         if self.is_player1:
             self.player.update(dt)
-            # Mob updates from network, but still run physics
             self.mob.update(dt)
             
-            # Camera follows player
             camx, camy, camz = self.camera.getPos()
             player_x = self.player.np.getPos()[0]
             self.camera.setPos(player_x, camy, camz)
         else:
-            # Player updates received from network
             self.player.update(dt)
-            # Mob is controlled locally
             self.mob.update(dt)
             
-            # Camera follows mob
             camx, camy, camz = self.camera.getPos()
             mob_x = self.mob.np.getPos()[0]
             self.camera.setPos(mob_x, camy, camz)
@@ -303,7 +289,6 @@ class Game(ShowBase):
 if __name__ == '__main__':
     import sys
     
-    # Determine if this is player 1 or player 2
     is_player1 = True
     if len(sys.argv) > 1:
         is_player1 = sys.argv[1].lower() != "player2"
