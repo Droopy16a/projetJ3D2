@@ -55,7 +55,7 @@ class Game(ShowBase):
 
         dlight.setShadowCaster(True, 2048, 2048)
 
-
+        self.setBackgroundColor(0,0,0,1)
         self.render.setLight(dlnp)
 
         alight = AmbientLight('alight')
@@ -64,16 +64,18 @@ class Game(ShowBase):
         self.render.setLight(alnp)
 
         self.physics = PhysicsManager(self.config.gravity, self.render)
-        if self.config.debug_physics:
-            self.physics.enable_debug()
+        # if self.config.debug_physics:
+        #     self.physics.enable_debug()
 
-        self.world = World(self.config, self.render, self.loader, self.physics)
+        self.world = World(self.config, self.render, self.loader, self.physics, index=0)
 
         self.player = Character(self.config, self.render, self.loader, self.physics)
 
+        x,y = self.world.setLimit()
+
         self.mob = [
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(45, 0, 7), 30, 70),
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(35, 0, 7), 30, 70)
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(15, 0, 7), x, y,),
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
         ]
 
         self.accept('z', self.player.set_key, ['z', True])
@@ -132,7 +134,12 @@ class Game(ShowBase):
 
         camx, camy, camz = self.camera.getPos()
         player_x = self.player.np.getPos()[0]
-        self.camera.setPos(player_x, camy, camz)
+
+        min_x, max_x = self.world.setLimit()
+
+        camx = max(min_x, min(player_x, max_x))
+
+        self.camera.setPos(camx, camy, camz)
 
         return task.cont
 

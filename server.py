@@ -10,28 +10,27 @@ s.connect(("8.8.8.8", 80))
 IP = s.getsockname()[0]
 s.close()
 
+players = {}
+
 async def handler(ws):
-    print("Client connected")
-    CLIENTS.add(ws)
+    player_id = str(id(ws))
+    players[player_id] = {"x": 0, "y": 0, "z": 0}
+
     try:
         async for msg in ws:
-            for c in list(CLIENTS):
-                if c is not ws:
-                    try:
-                        await c.send(msg)
-                    except Exception:
-                        CLIENTS.discard(c)
-    except websockets.exceptions.ConnectionClosed:
-        pass
+            data = json.loads(msg)
+            p = players[player_id]
+            p["x"] += data.get("dx",0)
+            p["y"] += data.get("dy",0)
+            p["z"] += data.get("dz",0)
+
+            await ws.send(json.dumps(players))
     finally:
-        CLIENTS.discard(ws)
-        print("Client disconnected")
+        del players[player_id]
 
 async def main():
     async with websockets.serve(handler, IP, PORT):
-        
-        print(f"Relay server running on ws://{IP}:{PORT}")
+        print(f"Server running on ws://{IP}:{PORT}")
         await asyncio.Future()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())

@@ -97,9 +97,18 @@ class Character:
 
         self.speed = config.speed
 
-        self.ray_vis = LineSegs()
-        self.ray_vis.setThickness(2)
-        self.ray_node = self.render.attachNewNode(self.ray_vis.create())
+        self.ray_vis = [LineSegs(), LineSegs(), LineSegs(), LineSegs()]
+        self.ray_node = [None] * len(self.ray_vis)
+
+        for r in range(len(self.ray_vis)):
+            self.ray_vis[r].setThickness(2)
+            self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
+
+        self.is_climbing = False
+        self.climb_progress = 0.0
+        self.climb_start_pos = Vec3(0)
+        self.climb_target_pos = Vec3(0)
+        self.climb_speed = 2.5
 
     def set_key(self, key: str, value: bool):
         self.keys[key] = value
@@ -167,24 +176,112 @@ class Character:
                 self.jump_sequence = Sequence(jump_anim, finish_func)
                 self.jump_sequence.start()
 
+    def do_climb(self):
+        forward = self.np.getQuat().getForward()
+        forward.normalize()
+
+        pos = self.np.getPos()
+
+        chest_from = pos + Vec3(0, 0, 3)
+        chest_to   = chest_from - forward * 1.2
+
+        head_from = pos + Vec3(0, 0, 4.2)
+        head_to   = head_from - forward * 1.2
+
+        ledge_from = pos - forward * 1.0 + Vec3(0, 0, 5.2)
+        ledge_to   = ledge_from - Vec3(0, 0, 3.5)
+
+        chest_hit = self.physics.world.rayTestClosest(chest_from, chest_to)
+        head_hit  = self.physics.world.rayTestClosest(head_from, head_to)
+        ledge_hit = self.physics.world.rayTestClosest(ledge_from, ledge_to)
+
+        for nb, (from_pos, to_pos) in enumerate([(chest_from, chest_to), (head_from, head_to), (ledge_from, ledge_to)]):
+            self.ray_vis[nb + 1].reset()
+            self.ray_vis[nb + 1].setThickness(2)
+
+            self.ray_vis[nb + 1].setColor(1, 0, 0, 1)
+            self.ray_vis[nb + 1].moveTo(from_pos)
+            self.ray_vis[nb + 1].drawTo(to_pos)
+            
+            self.ray_node[nb + 1].removeNode()
+            self.ray_node[nb + 1] = self.render.attachNewNode(self.ray_vis[nb + 1].create())
+
+        if chest_hit.hasHit() and not head_hit.hasHit() and ledge_hit.hasHit():
+            return True, ledge_hit.getHitPos(), chest_hit.getHitNormal()
+
+        return False, None, None
+    
+    def start_climb(self, ledge_pos: Vec3, wall_normal: Vec3):
+        if self.is_climbing:
+            return
+
+        self.is_climbing = True
+        self.climb_progress = 0.0
+
+        self.node.setLinearVelocity(Vec3(0))
+        self.node.setAngularVelocity(Vec3(0))
+        self.node.setGravity(Vec3(0))
+
+        self.node.setKinematic(True)
+
+        self.climb_start_pos = self.np.getPos()
+
+        self.climb_target_pos = (
+            ledge_pos +
+            Vec3(0, 0, 0.6) -
+            wall_normal * 0.6
+        )
+
+        self.actor.stop()
+
+    def update_climb(self, dt: float):
+        if not self.is_climbing:
+            return
+
+        self.climb_progress += dt * 2.5
+        t = min(self.climb_progress, 1.0)
+
+        t = t * t * (3 - 2 * t) 
+
+        new_pos = self.climb_start_pos * (1 - t) + self.climb_target_pos * t
+        self.np.setPos(new_pos)
+
+        if t >= 1.0:
+            self.finish_climb()
+
+    def finish_climb(self):
+        self.is_climbing = False
+
+        self.node.setKinematic(False)
+        self.node.setGravity(Vec3(0, 0, -9.81))
+        self.node.setLinearVelocity(Vec3(0))
+
+        if self.IDLE_ANIM:
+            self.actor.loop(self.IDLE_ANIM)
+
+
     def on_ground(self) -> bool:
         from_pos = self.np.getPos() + Vec3(0, 0, 0.5)
         to_pos = self.np.getPos() - Vec3(0, 0, 0.75)
         result = self.physics.world.rayTestClosest(from_pos, to_pos)
 
-        self.ray_vis.reset()
-        self.ray_vis.setThickness(2)
+        self.ray_vis[0].reset()
+        self.ray_vis[0].setThickness(2)
 
-        self.ray_vis.setColor(1, 0, 0, 1)
-        self.ray_vis.moveTo(from_pos)
-        self.ray_vis.drawTo(to_pos)
+        self.ray_vis[0].setColor(1, 0, 0, 1)
+        self.ray_vis[0].moveTo(from_pos)
+        self.ray_vis[0].drawTo(to_pos)
 
-        self.ray_node.removeNode()
-        self.ray_node = self.render.attachNewNode(self.ray_vis.create())
+        self.ray_node[0].removeNode()
+        self.ray_node[0] = self.render.attachNewNode(self.ray_vis[0].create())
 
         return result.hasHit()
 
     def update(self, dt: float):
+        if self.is_climbing:
+            self.update_climb(dt)
+            return
+        
         if self.is_charging_jump:
             if self.charge < self.config.jump_charge_max:
                 self.charge += self.config.jump_charge_rate
@@ -196,6 +293,10 @@ class Character:
         move_vec = Vec3(move_x, move_y, 0)
 
         on_ground = self.on_ground()
+        can_climb, hit_pos, hit_normal = self.do_climb()
+        if can_climb and not self.is_climbing and self.is_jumping:
+            self.start_climb(hit_pos, hit_normal)
+            return
 
         if move_vec.length() > 0:
             self.is_moving = True
