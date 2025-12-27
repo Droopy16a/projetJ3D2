@@ -10,6 +10,7 @@ class Config:
     player_mass: float = 70.0
     mob_mass: float = 30.0
     cube_mass: float = 200.0
+    boss_mass: float = 200.0
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
     debug_physics: bool = True
 
@@ -22,6 +23,7 @@ class Config:
     mob_model: str = "./assets/models/mobA.glb"
     cube_model: str = "./assets/models/box.glb"
     sword_model: str = "./assets/models/sword.glb"
+    boss_model : str = "./assets/models/boss.glb"
 
     levels: list = field(default_factory=lambda: [
         {
