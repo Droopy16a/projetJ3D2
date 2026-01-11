@@ -6,7 +6,6 @@ from assets.Character import Character
 from assets.Config import Config
 from assets.Mob import Mob
 from assets.World import World
-from assets.Boss import Boss
 from assets.PhysicsManager import PhysicsManager
 
 from direct.showbase.ShowBase import ShowBase
@@ -32,6 +31,8 @@ class Game(ShowBase):
     def __init__(self, config: Config = Config()):
         super().__init__()
         self.config = config
+        self.disableMouse()
+
         simplepbr.init(
             # use_normal_maps=True,
             enable_shadows=True,
@@ -74,8 +75,7 @@ class Game(ShowBase):
 
         self.mob = [
             Mob(self.config, self.render, self.loader, self.physics, Vec3(15, 0, 7), x, y,),
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y),
-            Boss(self.config, self.render, self.loader, self.physics, Vec3(-15, 0, 7), x, y)
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
         ]
 
         self.accept('z', self.player.set_key, ['z', True])
