@@ -27,7 +27,7 @@ class Config:
 
     levels: list = field(default_factory=lambda: [
         {
-            "level_model": "./assets/models/plat5.glb",
+            "level_model": "./assets/models/plat3.glb",
             "ignore": ["mur_back", "plafond", "porte", "poteau"],
             "size": 1.0,
             "pos": (0, 0, 0),

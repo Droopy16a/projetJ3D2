@@ -31,7 +31,7 @@ ConfigVariableString("bullet-filter-algorithm").setValue("groups-mask")
 class Game(ShowBase):
     def __init__(self, config: Config = Config()):
         super().__init__()
-        self.config = co
+        self.config = config
         simplepbr.init(
             # use_normal_maps=True,
             enable_shadows=True,
