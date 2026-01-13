@@ -21,7 +21,7 @@ def bit(gid: int) -> BitMask32:
 
 class Mob(DirectObject.DirectObject):
     def __init__(self, config: Config, render, loader, physics: PhysicsManager,
-                 start_pos: Vec3 = Vec3(0, 0, 7), from_pos_bound: int = -20, to_pos_bound: int = 20,
+                 start_pos: Vec3 = Vec3(0, 0, 7), from_pos_bound = None, to_pos_bound = None,
                  mode: str = 'AI'):
         self.config = config
         self.render = render
@@ -50,12 +50,15 @@ class Mob(DirectObject.DirectObject):
 
         self.speed = 2.5
         self.direction = 1
-        self.bounds = (from_pos_bound, to_pos_bound)
+        self.bounds = (from_pos_bound, to_pos_bound) if from_pos_bound and to_pos_bound else None
         self.np.setH(90)
 
-        self.ray_vis = LineSegs()
-        self.ray_vis.setThickness(2)
-        self.ray_node = self.render.attachNewNode(self.ray_vis.create())
+        self.ray_vis = [LineSegs(), LineSegs()]
+        self.ray_node = [None] * len(self.ray_vis)
+
+        for r in range(len(self.ray_vis)):
+            self.ray_vis[r].setThickness(2)
+            self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
         if self.mode == 'PLAYER':
             self.key_map = {"forward": False, "backward": False, "left": False, "right": False}
@@ -91,16 +94,21 @@ class Mob(DirectObject.DirectObject):
         from_hitzone = start + forward * 0.5
         to_hitzone = start + forward * -3.5
 
+        ledge_from = pos - forward * 2.5 + Vec3(0, 0, -3)
+        ledge_to   = ledge_from - Vec3(0, 0, -5.5)
+
         result = self.physics.world.rayTestClosest(from_pos, to_pos)
         hitzone = self.physics.world.rayTestClosest(from_hitzone, to_hitzone)
+        ledge = self.physics.world.rayTestClosest(ledge_from, ledge_to)
 
-        self.ray_vis.reset()
-        self.ray_vis.setThickness(2)
-        self.ray_vis.setColor(1, 0, 0, 1)
-        self.ray_vis.moveTo(from_hitzone)
-        self.ray_vis.drawTo(to_hitzone)
-        self.ray_node.removeNode()
-        self.ray_node = self.render.attachNewNode(self.ray_vis.create())
+        for nb, i in enumerate([(from_hitzone, to_hitzone), (ledge_from, ledge_to)]):
+            self.ray_vis[nb].reset()
+            self.ray_vis[nb].setThickness(2)
+            self.ray_vis[nb].setColor(1, 0, 0, 1)
+            self.ray_vis[nb].moveTo(i[0])
+            self.ray_vis[nb].drawTo(i[1])
+            self.ray_node[nb].removeNode()
+            self.ray_node[nb] = self.render.attachNewNode(self.ray_vis[nb].create())
 
         if hitzone.hasHit() and hitzone.getNode().getName() == 'Character':
             if current != 'atack' and 'atack' in self.actor.getAnimNames():
@@ -117,10 +125,13 @@ class Mob(DirectObject.DirectObject):
             if ctrl and ctrl.getFrame() == 17:
                 GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
 
-        if pos.x > self.bounds[1]:
+        if not ledge.hasHit():
+            self.direction *= -1
+            self.np.setH(self.np.getH() + 180)
+        if self.bounds and pos.x > self.bounds[1]:
             self.direction = -1
             self.np.setH(-90)
-        elif pos.x < self.bounds[0]:
+        elif self.bounds and pos.x < self.bounds[0]:
             self.direction = 1
             self.np.setH(90)
 

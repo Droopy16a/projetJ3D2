@@ -74,8 +74,8 @@ class Game(ShowBase):
         x,y = self.world.setLimit()
 
         self.mob = [
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(15, 0, 7), x, y,),
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(20, 0, 7)),
+            # Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
         ]
 
         self.accept('z', self.player.set_key, ['z', True])
