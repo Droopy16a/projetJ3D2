@@ -19,8 +19,9 @@ from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 from assets.Config import Config
 from assets.PhysicsManager import PhysicsManager
 from assets.Global_functions import apply_bullet_hitboxes
+from direct.showbase import DirectObject
 
-class Character:
+class Character(DirectObject.DirectObject):
     def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 5)):
         self.config = config
         self.render = render
@@ -89,6 +90,19 @@ class Character:
         self.is_jumping = False
         self.is_charging_jump = False
         self.is_attacking = False
+
+        self.accept('z', self.set_key, ['z', True])
+        self.accept('z-up', self.set_key, ['z', False])
+        self.accept('s', self.set_key, ['s', True])
+        self.accept('s-up', self.set_key, ['s', False])
+        self.accept('q', self.set_key, ['q', True])
+        self.accept('q-up', self.set_key, ['q', False])
+        self.accept('d', self.set_key, ['d', True])
+        self.accept('d-up', self.set_key, ['d', False])
+        self.accept('space', self.start_jump_charge)
+        self.accept('space-up', self.perform_jump)
+
+        self.accept('mouse1', self.perform_attack)
 
         self.jump_crouch_frame = 10
         self.jump_fly_frame = 25

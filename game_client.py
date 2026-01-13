@@ -76,17 +76,6 @@ class Game(ShowBase):
             Mob(self.config, self.render, self.loader, self.physics, Vec3(35, 0, 7), 30, 70)
         ]
 
-        self.accept('z', self.player.set_key, ['z', True])
-        self.accept('z-up', self.player.set_key, ['z', False])
-        self.accept('s', self.player.set_key, ['s', True])
-        self.accept('s-up', self.player.set_key, ['s', False])
-        self.accept('q', self.player.set_key, ['q', True])
-        self.accept('q-up', self.player.set_key, ['q', False])
-        self.accept('d', self.player.set_key, ['d', True])
-        self.accept('d-up', self.player.set_key, ['d', False])
-        self.accept('space', self.player.start_jump_charge)
-        self.accept('space-up', self.player.perform_jump)
-
         self.accept('mouse1', self.player.perform_attack)
 
         self.taskMgr.add(self._task_physics, 'physics_task')
