@@ -14,7 +14,7 @@ players = {}
 
 async def handler(ws):
     player_id = str(id(ws))
-    players[player_id] = {"x": 0, "y": 0, "z": 0}
+    players[player_id] = {"x": 0, "y": 0}
 
     try:
         async for msg in ws:
@@ -22,7 +22,6 @@ async def handler(ws):
             p = players[player_id]
             p["x"] += data.get("dx",0)
             p["y"] += data.get("dy",0)
-            p["z"] += data.get("dz",0)
 
             await ws.send(json.dumps(players))
     finally:
