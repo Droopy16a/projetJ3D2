@@ -11,6 +11,7 @@ async def handler(ws):
         return
 
     player_id = str(id(ws))
+    pidS = len(players)
     print("New client connected:", player_id)
 
     players[player_id] = {
@@ -35,7 +36,7 @@ async def handler(ws):
 
             for pid, p in players.items():
                 if p["ws"] != ws:
-                    await p["ws"].send(json.dumps(payload))
+                    await p["ws"].send(json.dumps(list(payload.values())[pidS]))
 
     finally:
         del players[player_id]
