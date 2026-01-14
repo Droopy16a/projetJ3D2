@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 
 from assets.Character import Character
@@ -85,21 +86,53 @@ class Game(ShowBase):
         
         self.taskMgr.add(self._task_physics, 'physics_task')
         self.taskMgr.add(self._task_update, 'update_task')
-
+        self.taskMgr.add(self._task_websocket, 'websocket_task')
+        
         self.PORT = 8765
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        self.IP = s.getsockname()[0]
-        s.close()
+        self.websocket = None
+        self.ws_uri = f"ws://192.168.1.17:{self.PORT}"
+        self._event_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._event_loop)
+        self._connection_established = False
 
-        asyncio.run(self.connect_to_server(f"ws://192.168.1.17:{self.PORT}"))
+    async def connect_to_server(self):
+        try:
+            self.websocket = await websockets.connect(self.ws_uri)
+            self._connection_established = True
+            print(f"Connected to server at {self.ws_uri}")
+        except Exception as e:
+            print(f"Failed to connect: {e}")
+            self._connection_established = False
 
-    async def connect_to_server(self, uri: str):
-        async with websockets.connect(uri) as websocket:
-            await websocket.send('{"x": 0, "y": 0}')
-            response = await websocket.recv()
+    async def sendMessage(self):
+        if not self.websocket or not self._connection_established:
+            return
+        
+        try:
+            playermv = {
+                "x": self.player.np.getX(),
+                "y": self.player.np.getZ(),
+            }
+            await self.websocket.send(json.dumps(playermv))
+            response = await self.websocket.recv()
             print(f"Received from server: {response}")
+        except websockets.exceptions.ConnectionClosed:
+            print("Connection closed, will attempt to reconnect")
+            self._connection_established = False
+        except Exception as e:
+            print(f"Error sending/receiving: {e}")
+            self._connection_established = False
 
+    def _task_websocket(self, task):
+        """Websocket communication task"""
+        # Connect if not connected
+        if not self._connection_established:
+            self._event_loop.run_until_complete(self.connect_to_server())
+        else:
+            # Send position update
+            self._event_loop.run_until_complete(self.sendMessage())
+
+        return task.cont
 
     def _task_physics(self, task):
         dt = globalClock.getDt()

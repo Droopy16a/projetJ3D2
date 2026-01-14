@@ -14,8 +14,8 @@ async def handler(ws):
         async for msg in ws:
             data = json.loads(msg)
             p = players[player_id]
-            p["x"] += data.get("dx",0)
-            p["y"] += data.get("dy",0)
+            p["x"] = data.get("x",0)
+            p["y"] = data.get("y",0)
 
             await ws.send(json.dumps(players))
     finally:
