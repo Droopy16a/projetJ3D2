@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import random
-import socket
 
 from assets.Character import Character
 from assets.Config import Config
@@ -25,6 +24,7 @@ from assets.Global_state import GLOBAL_STATE
 
 import asyncio
 import websockets
+import socket
 
 
 loadPrcFileData("", "win-size 1920 1080")
@@ -71,17 +71,18 @@ class Game(ShowBase):
         # if self.config.debug_physics:
         #     self.physics.enable_debug()
 
-        self.world = World(self.config, self.render, self.loader, self.physics, index=0)
+        self.world = World(self.config, self.render, self.loader, self.physics, index=1)
 
         self.player = Character(self.config, self.render, self.loader, self.physics)
 
+        x,y = self.world.setLimit()
+
         self.mob = [
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(45, 0, 7), 30, 70),
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(35, 0, 7), 30, 70)
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(20, 0, 7), mode='PLAYER'),
+            # Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
         ]
 
-        self.accept('mouse1', self.player.perform_attack)
-
+        
         self.taskMgr.add(self._task_physics, 'physics_task')
         self.taskMgr.add(self._task_update, 'update_task')
 
@@ -95,9 +96,10 @@ class Game(ShowBase):
 
     async def connect_to_server(self, uri: str):
         async with websockets.connect(uri) as websocket:
-            await websocket.send("Hello Server!")
+            await websocket.send('{"x": 0, "y": 0}')
             response = await websocket.recv()
             print(f"Received from server: {response}")
+
 
     def _task_physics(self, task):
         dt = globalClock.getDt()
