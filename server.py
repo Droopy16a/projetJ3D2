@@ -1,6 +1,7 @@
 import asyncio
 import websockets
 import json
+import time
 
 PORT = 8765
 players = {}
@@ -17,7 +18,8 @@ async def handler(ws):
     players[player_id] = {
         "ws": ws,
         "x": 0,
-        "y": 0
+        "y": 0,
+        "timestamp": int(time.time() * 1000)
     }
 
     await ws.send(str(pidS))
@@ -28,9 +30,10 @@ async def handler(ws):
 
             players[player_id]["x"] = data.get("x", 0)
             players[player_id]["y"] = data.get("y", 0)
+            players[player_id]["timestamp"] = data.get("timestamp", 0)
 
             payload = {
-                pid: {"x": p["x"], "y": p["y"]}
+                pid: {"x": p["x"], "y": p["y"], "timestamp": p["timestamp"]}
                 for pid, p in players.items()
             }
 

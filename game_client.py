@@ -26,6 +26,7 @@ from assets.Global_state import GLOBAL_STATE
 import asyncio
 import websockets
 import socket
+import time
 
 
 loadPrcFileData("", "win-size 1920 1080")
@@ -74,14 +75,11 @@ class Game(ShowBase):
 
         self.world = World(self.config, self.render, self.loader, self.physics, index=1)
 
-        self.player = Character(self.config, self.render, self.loader, self.physics)
+        self.player = None
+
+        self.mob = []
 
         x,y = self.world.setLimit()
-
-        self.mob = [
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(25, 0, 7), mode='PLAYER'),
-            # Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
-        ]
 
         self.taskMgr.add(self._task_physics, 'physics_task')
         self.taskMgr.add(self._task_update, 'update_task')
@@ -93,10 +91,13 @@ class Game(ShowBase):
         self._event_loop = None
         self._connection_established = False
         self._ws_task = None
+        self.player_id = None
         
         # Rate limiting for network updates
         self.network_update_interval = 0.1  # Send updates every 100ms (10 times/sec)
         self.time_since_last_send = 0.0
+
+        self.pastPos = {"x" : 0, "y" : 0, "timestamp": int(time.time() * 1000)}
 
     async def websocket_handler(self):
         """Background task to handle websocket communication"""
@@ -117,8 +118,40 @@ class Game(ShowBase):
                                 websocket.recv(), 
                                 timeout=0.001
                             )
-                            print(f"You are player number {response}")
-                            GLOBAL_STATE.set_player_id(int(response))
+                            # print(f"received : {response}")
+                            if self.player_id is None:
+                                self.player_id = int(response)
+                                GLOBAL_STATE.set_player_id(self.player_id)
+                                self.player = Character(self.config, self.render, self.loader, self.physics)
+
+                                self.mob = [
+                                    Mob(self.config, self.render, self.loader, self.physics, Vec3(25, 0, 7), mode='PLAYER'),
+                                    # Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
+                                ]
+                            else:
+                                data = json.loads(response)
+                                lerp = lambda a, b, t: a + (b - a) * t
+                                
+                                current_time = int(time.time() * 1000)
+                                t0 = self.pastPos["timestamp"]
+                                x0 = self.pastPos["x"]
+                                y0 = self.pastPos["y"]
+                                self.pastPos = data
+
+                                t1 = data["timestamp"]
+                                x1 = data["x"]
+                                y1 = data["y"]
+
+                                t = (current_time - t0) / (t1 - t0)
+                                render_x = lerp(x0, x1, t)
+                                render_y = lerp(y0, y1, t)
+
+                                if self.player_id == 0:
+                                    self.mob[0].np.setX(render_x)
+                                    self.mob[0].np.setZ(render_y)
+                                else:
+                                    self.player.np.setX(render_x)
+                                    self.player.np.setZ(render_y)
                         except asyncio.TimeoutError:
                             # No message received, continue
                             pass
@@ -130,10 +163,10 @@ class Game(ShowBase):
                 print("Connection closed, reconnecting in 2 seconds...")
                 self._connection_established = False
                 await asyncio.sleep(2)
-            except Exception as e:
-                print(f"Connection error: {e}, retrying in 2 seconds...")
-                self._connection_established = False
-                await asyncio.sleep(2)
+            # except Exception as e:
+            #     print(f"Connection error: {e}, retrying in 2 seconds...")
+            #     self._connection_established = False
+            #     await asyncio.sleep(2)
 
     async def send_player_position(self):
         """Send player position to server"""
@@ -141,9 +174,15 @@ class Game(ShowBase):
             return
         
         try:
+            if self.player_id == 0:
+                pos = self.player.np
+            else:
+                pos = self.mob[0].np
+
             playermv = {
-                "x": float(self.player.np.getX()),
-                "y": float(self.player.np.getZ()),
+                "x": float(pos.getX()),
+                "y": float(pos.getZ()),
+                "timestamp": int(time.time() * 1000)
             }
             await self.websocket.send(json.dumps(playermv))
         except Exception as e:
@@ -210,18 +249,21 @@ class Game(ShowBase):
     def _task_update(self, task):
         dt = globalClock.getDt()
 
-        self.player.update(dt)
+
         for m in self.mob:
             m.update(dt)
 
-        camx, camy, camz = self.camera.getPos()
-        player_x = self.player.np.getPos()[0]
+        if self.player:
+            self.player.update(dt)
 
-        min_x, max_x = self.world.setLimit()
+            camx, camy, camz = self.camera.getPos()
+            player_x = self.player.np.getPos()[0] if self.player_id == 0 else self.mob[0].np.getPos()[0]
 
-        camx = max(min_x, min(player_x, max_x))
+            min_x, max_x = self.world.setLimit()
 
-        self.camera.setPos(camx, camy, camz)
+            camx = max(min_x, min(player_x, max_x))
+
+            self.camera.setPos(camx, camy, camz)
 
         return task.cont
 

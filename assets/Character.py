@@ -61,18 +61,21 @@ class Character(DirectObject.DirectObject):
         self.is_charging_jump = False
         self.is_attacking = False
 
-        self.accept('z', self.set_key, ['z', True])
-        self.accept('z-up', self.set_key, ['z', False])
-        self.accept('s', self.set_key, ['s', True])
-        self.accept('s-up', self.set_key, ['s', False])
-        self.accept('q', self.set_key, ['q', True])
-        self.accept('q-up', self.set_key, ['q', False])
-        self.accept('d', self.set_key, ['d', True])
-        self.accept('d-up', self.set_key, ['d', False])
-        self.accept('space', self.start_jump_charge)
-        self.accept('space-up', self.perform_jump)
+        if GLOBAL_STATE.get_player_id() == 0:
+            self.accept('z', self.set_key, ['z', True])
+            self.accept('z-up', self.set_key, ['z', False])
+            self.accept('s', self.set_key, ['s', True])
+            self.accept('s-up', self.set_key, ['s', False])
+            self.accept('q', self.set_key, ['q', True])
+            self.accept('q-up', self.set_key, ['q', False])
+            self.accept('d', self.set_key, ['d', True])
+            self.accept('d-up', self.set_key, ['d', False])
+            self.accept('space', self.start_jump_charge)
+            self.accept('space-up', self.perform_jump)
 
-        self.accept('mouse1', self.perform_attack)
+            self.accept('mouse1', self.perform_attack)
+        elif GLOBAL_STATE.get_player_id() == 1:
+            self.disable_physics()
 
         self.jump_crouch_frame = 10
         self.jump_fly_frame = 25
@@ -93,6 +96,12 @@ class Character(DirectObject.DirectObject):
         self.climb_start_pos = Vec3(0)
         self.climb_target_pos = Vec3(0)
         self.climb_speed = 2.5
+
+    def disable_physics(self):
+        self.node.setKinematic(True)
+        self.node.setGravity(Vec3(0))
+        self.node.setLinearVelocity(Vec3(0))
+        self.node.setAngularVelocity(Vec3(0))
 
     def set_key(self, key: str, value: bool):
         self.keys[key] = value
@@ -242,7 +251,6 @@ class Character(DirectObject.DirectObject):
 
         if self.IDLE_ANIM:
             self.actor.loop(self.IDLE_ANIM)
-
 
     def on_ground(self) -> bool:
         from_pos = self.np.getPos() + Vec3(0, 0, 0.5)
