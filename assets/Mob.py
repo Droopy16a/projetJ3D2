@@ -74,7 +74,7 @@ class Mob(DirectObject.DirectObject):
             self.ray_vis[r].setThickness(2)
             self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
-        if self.mode == 'PLAYER':
+        if self.mode == 'PLAYER' and GLOBAL_STATE.get_player_id() == 1:
             self.keys: Dict[str, bool] = {k: False for k in ('z', 'q', 's', 'd')}
             self.accept('z', self.set_key, ['z', True])
             self.accept('z-up', self.set_key, ['z', False])
@@ -179,9 +179,12 @@ class Mob(DirectObject.DirectObject):
 
     def update_player(self, dt: float):
         current = self.actor.getCurrentAnim()
-
-        move_x = float(self.keys['d']) - float(self.keys['q'])
-        move_y = float(self.keys['z']) - float(self.keys['s'])
+        if GLOBAL_STATE.get_player_id() == 1:
+            move_x = float(self.keys['d']) - float(self.keys['q'])
+            move_y = float(self.keys['z']) - float(self.keys['s'])
+        else:
+            move_x = 0.0
+            move_y = 0.0
         move_vec = Vec3(move_x, move_y, 0)
 
         if move_vec.length() > 0:

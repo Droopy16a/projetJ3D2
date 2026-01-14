@@ -17,6 +17,7 @@ from panda3d.bullet import (
 )
 from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 from assets.Config import Config
+from assets.Global_state import GLOBAL_STATE
 from assets.PhysicsManager import PhysicsManager
 from assets.Global_functions import apply_bullet_hitboxes
 from direct.showbase import DirectObject
@@ -31,16 +32,6 @@ class Character(DirectObject.DirectObject):
         self.actor = Actor(self.config.player_model)
         self.actor.reparentTo(render)
 
-        # shader = Shader.load(
-        #     Shader.SL_GLSL,
-        #     "assets/shadow.vert",
-        #     "assets/shadow.frag"
-        # )
-
-        # self.actor.setShader(shader)
-
-        # apply_bullet_hitboxes(self.actor, physics.world)
-
         shape = BulletCapsuleShape(0.75, 3.0, 2)
         self.node = BulletRigidBodyNode('Character')
         self.node.setMass(config.player_mass)
@@ -48,27 +39,6 @@ class Character(DirectObject.DirectObject):
         self.node.setAngularFactor(Vec3(0, 0, 0))
         self.node.setLinearFactor(Vec3(1, 0, 1))
         self.node.setDeactivationEnabled(False)
-
-        # np = self.actor.find("*/Object_4.007")
-
-        # parent = np.get_parent()
-
-        # if not parent.node().is_of_type(BulletRigidBodyNode):
-        #     min_bound, max_bound = np.get_tight_bounds()
-        #     if not (min_bound is None or max_bound is None):
-        #         center = (min_bound + max_bound) * 0.5
-        #         size = (max_bound - min_bound) * 0.5
-
-        #         shape = BulletBoxShape(Vec3(size))
-
-        #         body = BulletRigidBodyNode(f"hitbox_{np.get_name()}")
-        #         body.set_kinematic(True)
-        #         body.add_shape(shape, TransformState.make_pos(center))
-
-        #         body_np = parent.attach_new_node(body)
-        #         body_np.set_transform(np.get_transform(parent))
-
-        #         self.physics.world.attach(body)
 
         self.np = render.attachNewNode(self.node)
         self.np.setPos(start_pos)
@@ -292,6 +262,13 @@ class Character(DirectObject.DirectObject):
         return result.hasHit()
 
     def update(self, dt: float):
+        playMode = GLOBAL_STATE.get_player_id()
+        if playMode == 0:
+            self.update_player_mode(dt)
+        elif playMode == 1:
+            self.update_boss_mode(dt)
+
+    def update_player_mode(self, dt: float):
         if self.is_climbing:
             self.update_climb(dt)
             return
@@ -347,3 +324,6 @@ class Character(DirectObject.DirectObject):
                 self.actor.play(self.JUMP_ANIM, fromFrame=self.jump_fly_frame + 1)
         elif not on_ground:
             self.is_jumping = True
+
+    def update_boss_mode(self, dt: float):
+        pass

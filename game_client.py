@@ -79,11 +79,10 @@ class Game(ShowBase):
         x,y = self.world.setLimit()
 
         self.mob = [
-            Mob(self.config, self.render, self.loader, self.physics, Vec3(20, 0, 7), mode='PLAYER'),
+            Mob(self.config, self.render, self.loader, self.physics, Vec3(25, 0, 7), mode='PLAYER'),
             # Mob(self.config, self.render, self.loader, self.physics, Vec3(5, 0, 7), x, y)
         ]
 
-        
         self.taskMgr.add(self._task_physics, 'physics_task')
         self.taskMgr.add(self._task_update, 'update_task')
         self.taskMgr.add(self._task_websocket, 'websocket_task')
@@ -118,7 +117,8 @@ class Game(ShowBase):
                                 websocket.recv(), 
                                 timeout=0.001
                             )
-                            print(f"Received from server: {response}")
+                            print(f"You are player number {response}")
+                            GLOBAL_STATE.set_player_id(int(response))
                         except asyncio.TimeoutError:
                             # No message received, continue
                             pass

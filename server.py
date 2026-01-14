@@ -20,7 +20,7 @@ async def handler(ws):
         "y": 0
     }
 
-    await ws.send("Welcome! You are player " + player_id)
+    await ws.send(str(pidS))
 
     try:
         async for msg in ws:
