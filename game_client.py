@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import socket
 
 from assets.Character import Character
 from assets.Config import Config
@@ -21,6 +22,9 @@ from panda3d.core import (
 
 import simplepbr
 from assets.Global_state import GLOBAL_STATE
+
+import asyncio
+import websockets
 
 
 loadPrcFileData("", "win-size 1920 1080")
@@ -80,6 +84,20 @@ class Game(ShowBase):
 
         self.taskMgr.add(self._task_physics, 'physics_task')
         self.taskMgr.add(self._task_update, 'update_task')
+
+        self.PORT = 8765
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        self.IP = s.getsockname()[0]
+        s.close()
+
+        asyncio.run(self.connect_to_server(f"ws://{self.IP}:{self.PORT}"))
+
+    async def connect_to_server(self, uri: str):
+        async with websockets.connect(uri) as websocket:
+            await websocket.send("Hello Server!")
+            response = await websocket.recv()
+            print(f"Received from server: {response}")
 
     def _task_physics(self, task):
         dt = globalClock.getDt()
