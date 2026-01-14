@@ -124,12 +124,9 @@ class Game(ShowBase):
             self._connection_established = False
 
     def _task_websocket(self, task):
-        """Websocket communication task"""
-        # Connect if not connected
         if not self._connection_established:
             self._event_loop.run_until_complete(self.connect_to_server())
         else:
-            # Send position update
             self._event_loop.run_until_complete(self.sendMessage())
 
         return task.cont
