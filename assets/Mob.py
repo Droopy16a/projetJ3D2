@@ -74,7 +74,7 @@ class Mob(DirectObject.DirectObject):
             self.ray_vis[r].setThickness(2)
             self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
-        if self.mode == 'PLAYER':
+        if self.mode == 'PLAYER' and GLOBAL_STATE.get_player_id() == 1:
             self.keys: Dict[str, bool] = {k: False for k in ('z', 'q', 's', 'd')}
             self.accept('z', self.set_key, ['z', True])
             self.accept('z-up', self.set_key, ['z', False])
@@ -86,7 +86,14 @@ class Mob(DirectObject.DirectObject):
             self.accept('d-up', self.set_key, ['d', False])
 
             self.accept('mouse1', self.perform_attack)
+        elif self.mode == 'PLAYER' and GLOBAL_STATE.get_player_id() == 0:
+            self.disable_physics()
 
+    def disable_physics(self):
+        self.node.setKinematic(True)
+        self.node.setGravity(Vec3(0))
+        self.node.setLinearVelocity(Vec3(0))
+        self.node.setAngularVelocity(Vec3(0))
 
     def set_key(self, key, value):
         self.keys[key] = value
@@ -182,35 +189,32 @@ class Mob(DirectObject.DirectObject):
         if GLOBAL_STATE.get_player_id() == 1:
             move_x = float(self.keys['d']) - float(self.keys['q'])
             move_y = float(self.keys['z']) - float(self.keys['s'])
-        else:
-            move_x = 0.0
-            move_y = 0.0
-        move_vec = Vec3(move_x, move_y, 0)
+            move_vec = Vec3(move_x, move_y, 0)
 
-        if move_vec.length() > 0:
-            move_vec.normalize()
-            velocity = move_vec * self.speed * 1.5
-            current_z = self.node.getLinearVelocity().z
-            velocity.setZ(current_z)
-            self.node.setLinearVelocity(velocity)
+            if move_vec.length() > 0:
+                move_vec.normalize()
+                velocity = move_vec * self.speed * 1.5
+                current_z = self.node.getLinearVelocity().z
+                velocity.setZ(current_z)
+                self.node.setLinearVelocity(velocity)
 
-            angle = math.degrees(math.atan2(move_x, -move_y))
-            self.np.setH(angle)
+                angle = math.degrees(math.atan2(move_x, -move_y))
+                self.np.setH(angle)
 
-            if not self.is_moving and not self.is_attacking and self.WALK_ANIM:
-                self.is_moving = True
-                self.actor.loop(self.WALK_ANIM)
-    
-        else:
-            self.is_moving = False
-            self.actor.stop()
-            self.actor.loop(self.IDLE_ANIM)
+                if not self.is_moving and not self.is_attacking and self.WALK_ANIM:
+                    self.is_moving = True
+                    self.actor.loop(self.WALK_ANIM)
+        
+            else:
+                self.is_moving = False
+                self.actor.stop()
+                self.actor.loop(self.IDLE_ANIM)
 
-        if self.is_attacking:
-            ctrl = self.actor.getAnimControl('atack')
-            if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
-                self.actor.loop('run')
-            if ctrl and ctrl.getFrame() == 17:
-                GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
+            if self.is_attacking:
+                ctrl = self.actor.getAnimControl('atack')
+                if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
+                    self.actor.loop('run')
+                if ctrl and ctrl.getFrame() == 17:
+                    GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
 
 
