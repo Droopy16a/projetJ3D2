@@ -1,14 +1,8 @@
 import asyncio
 import websockets
 import json
-import socket
 
 PORT = 8765
-CLIENTS = set()
-s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.connect(("8.8.8.8", 80))
-IP = s.getsockname()[0]
-s.close()
 
 players = {}
 
@@ -28,8 +22,8 @@ async def handler(ws):
         del players[player_id]
 
 async def main():
-    async with websockets.serve(handler, IP, PORT):
-        print(f"Server running on ws://{IP}:{PORT}")
+    async with websockets.serve(handler, "0.0.0.0", PORT):
+        print(f"Server running on ws://0.0.0.0:{PORT}")
         await asyncio.Future()
 
 asyncio.run(main())
