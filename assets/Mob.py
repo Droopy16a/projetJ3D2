@@ -74,7 +74,7 @@ class Mob(DirectObject.DirectObject):
             self.ray_vis[r].setThickness(2)
             self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
-        if self.mode == 'PLAYER' and GLOBAL_STATE.get_player_id() == 1:
+        if self.mode == 'PLAYER':
             self.keys: Dict[str, bool] = {k: False for k in ('z', 'q', 's', 'd')}
             self.accept('z', self.set_key, ['z', True])
             self.accept('z-up', self.set_key, ['z', False])
