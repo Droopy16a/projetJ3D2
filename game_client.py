@@ -92,7 +92,7 @@ class Game(ShowBase):
         self.IP = s.getsockname()[0]
         s.close()
 
-        asyncio.run(self.connect_to_server(f"ws://{self.IP}:{self.PORT}"))
+        asyncio.run(self.connect_to_server(f"ws://192.168.1.17:{self.PORT}"))
 
     async def connect_to_server(self, uri: str):
         async with websockets.connect(uri) as websocket:
