@@ -1,53 +1,78 @@
 import asyncio
-import websockets
 import json
-import time
+import os
+from typing import Any
 
-PORT = 8765
-players = {}
+import websockets
 
-async def handler(ws):
-    if len(players) >= 2:
-        await ws.close()
+
+PORT = int(os.getenv("DUNGEON_ARISE_PORT", "8765"))
+ROLE_HERO = 0
+ROLE_BOSS = 1
+clients: dict[int, Any] = {}
+
+
+def get_available_role() -> int | None:
+    for role in (ROLE_HERO, ROLE_BOSS):
+        if role not in clients:
+            return role
+    return None
+
+
+async def broadcast(payload: dict, exclude_role: int | None = None):
+    if not clients:
         return
 
-    player_id = str(id(ws))
-    pidS = len(players)
-    print("New client connected:", player_id)
+    encoded = json.dumps(payload)
+    stale_roles: list[int] = []
+    for role, ws in clients.items():
+        if exclude_role is not None and role == exclude_role:
+            continue
+        try:
+            await ws.send(encoded)
+        except websockets.exceptions.ConnectionClosed:
+            stale_roles.append(role)
 
-    players[player_id] = {
-        "ws": ws,
-        "x": 0,
-        "y": 0,
-        "timestamp": int(time.time() * 1000)
-    }
+    for role in stale_roles:
+        clients.pop(role, None)
 
-    await ws.send(str(pidS))
+
+async def handler(ws):
+    role = get_available_role()
+    if role is None:
+        await ws.close(code=4000, reason="Server full")
+        return
+
+    clients[role] = ws
+    print(f"Client joined as role={role}")
+    await ws.send(json.dumps({"type": "welcome", "player_id": role}))
+    await broadcast({"type": "peer_status", "role": role, "status": "joined"}, exclude_role=role)
 
     try:
-        async for msg in ws:
-            data = json.loads(msg)
+        async for message in ws:
+            try:
+                payload = json.loads(message)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
 
-            players[player_id]["x"] = data.get("x", 0)
-            players[player_id]["y"] = data.get("y", 0)
-            players[player_id]["timestamp"] = data.get("timestamp", 0)
-
-            payload = {
-                pid: {"x": p["x"], "y": p["y"], "timestamp": p["timestamp"]}
-                for pid, p in players.items()
-            }
-
-            for pid, p in players.items():
-                if p["ws"] != ws:
-                    await p["ws"].send(json.dumps(list(payload.values())[pidS]))
-
+            await broadcast(
+                {"type": "relay", "from": role, "payload": payload},
+                exclude_role=role,
+            )
     finally:
-        del players[player_id]
-        print("Client disconnected:", player_id)
+        if clients.get(role) is ws:
+            del clients[role]
+        print(f"Client left role={role}")
+        await broadcast({"type": "peer_status", "role": role, "status": "left"})
+
 
 async def main():
     async with websockets.serve(handler, "0.0.0.0", PORT):
         print(f"Server running on ws://0.0.0.0:{PORT}")
         await asyncio.Future()
 
-asyncio.run(main())
+
+if __name__ == "__main__":
+    asyncio.run(main())

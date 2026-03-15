@@ -3,7 +3,7 @@ from direct.gui.DirectGui import DirectButton, DirectFrame, OnscreenText
 from panda3d.core import TransparencyAttrib, TextNode
 from panda3d.core import loadPrcFileData
 from direct.gui import DirectGuiGlobals as DGG
-from main import Game
+from game_client import Game
 
 loadPrcFileData("", "win-size 1920 1080")
 
@@ -130,7 +130,8 @@ class Menu(ShowBase):
 
     def start_game(self):
         self.destroy()
-        Game()
+        game = Game()
+        game.run()
 
     def show_options(self):
         print("Opening options...")

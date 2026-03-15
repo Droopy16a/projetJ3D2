@@ -7,13 +7,11 @@ from panda3d.core import (
     Vec3,
     TransformState, 
     LineSegs,
-    Shader,
 )
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
     BulletRigidBodyNode,
     BulletCapsuleShape,
-    BulletBoxShape,
 )
 from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 from assets.Config import Config
@@ -58,8 +56,18 @@ class Character(DirectObject.DirectObject):
         self.keys: Dict[str, bool] = {k: False for k in ('z', 'q', 's', 'd')}
         self.is_moving = False
         self.is_jumping = False
-        self.is_charging_jump = False
         self.is_attacking = False
+        self._remote_attack_latched = False
+        self.jump_buffer_timer = 0.0
+        self.jump_buffer_window = 0.14
+        self.coyote_timer = 0.0
+        self.coyote_window = 0.11
+        self.ground_accel = 55.0
+        self.air_accel = 28.0
+        self.ground_friction = 70.0
+        self.air_drag = 6.5
+        self.jump_cut_multiplier = 0.55
+        self.jump_impulse = self.config.jump_base * 1.30
 
         if GLOBAL_STATE.get_player_id() == 0:
             self.accept('z', self.set_key, ['z', True])
@@ -70,17 +78,14 @@ class Character(DirectObject.DirectObject):
             self.accept('q-up', self.set_key, ['q', False])
             self.accept('d', self.set_key, ['d', True])
             self.accept('d-up', self.set_key, ['d', False])
-            self.accept('space', self.start_jump_charge)
-            self.accept('space-up', self.perform_jump)
-
-            self.accept('mouse1', self.perform_attack)
+            self.accept('space', self.request_jump)
+            self.accept('space-up', self.cut_jump)
         elif GLOBAL_STATE.get_player_id() == 1:
             self.disable_physics()
 
         self.jump_crouch_frame = 10
         self.jump_fly_frame = 25
         self.jump_sequence: Optional[Sequence] = None
-        self.charge = self.config.jump_base
 
         self.speed = config.speed
 
@@ -106,7 +111,15 @@ class Character(DirectObject.DirectObject):
     def set_key(self, key: str, value: bool):
         self.keys[key] = value
 
+    def _approach(self, current: float, target: float, max_delta: float) -> float:
+        if current < target:
+            return min(current + max_delta, target)
+        return max(current - max_delta, target)
+
     def perform_attack(self):
+        self._play_attack_animation()
+
+    def _play_attack_animation(self):
         if self.is_attacking:
             return
 
@@ -128,46 +141,60 @@ class Character(DirectObject.DirectObject):
         self.attack_seq = Sequence(attack_interval, Func(finish))
         self.attack_seq.start()
 
-    def start_jump_charge(self):
-        if self.on_ground() and not self.is_jumping:
-            self.is_charging_jump = True
-            self.actor.stop()
+    def get_network_anim_state(self) -> dict[str, bool]:
+        vel = self.node.getLinearVelocity()
+        moving = abs(vel.x) > 0.15 or abs(vel.y) > 0.15
+        return {
+            "moving": moving,
+            "jumping": self.is_jumping,
+            "attacking": self.is_attacking,
+        }
 
-            if self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
-                if self.jump_sequence:
-                    self.jump_sequence.finish()
+    def apply_remote_animation(self, moving: bool, attacking: bool, jumping: bool):
+        self.is_moving = moving
+        if attacking and not self._remote_attack_latched:
+            self._play_attack_animation()
+        self._remote_attack_latched = attacking
 
-                crouch = ActorInterval(self.actor, self.JUMP_ANIM, startFrame=0, endFrame=self.jump_crouch_frame)
-                crouch_func = Func(self.actor.pose, self.JUMP_ANIM, self.jump_crouch_frame + 1)
-                self.crouch_sequence = Sequence(crouch, crouch_func)
-                self.crouch_sequence.start()
+        if attacking:
+            return
+
+        if jumping and self.JUMP_ANIM:
+            if self.actor.getCurrentAnim() != self.JUMP_ANIM:
+                self.actor.loop(self.JUMP_ANIM)
+            return
+
+        if moving and self.WALK_ANIM:
+            if self.actor.getCurrentAnim() != self.WALK_ANIM:
+                self.actor.loop(self.WALK_ANIM)
+            return
+
+        if self.IDLE_ANIM and self.actor.getCurrentAnim() != self.IDLE_ANIM:
+            self.actor.loop(self.IDLE_ANIM)
+
+    def request_jump(self):
+        self.jump_buffer_timer = self.jump_buffer_window
+
+    def cut_jump(self):
+        vel = self.node.getLinearVelocity()
+        if vel.z > 0:
+            vel.setZ(vel.z * self.jump_cut_multiplier)
+            self.node.setLinearVelocity(vel)
 
     def perform_jump(self):
-        if self.is_charging_jump and self.on_ground():
-            self.is_charging_jump = False
-            self.is_jumping = True
-            
-            move_vec = Vec3(0, 0, 1)
-            move_vec.normalize()
+        self.is_jumping = True
+        vel = self.node.getLinearVelocity()
+        vel.setZ(max(vel.z, 0.0) + self.jump_impulse)
+        self.node.setLinearVelocity(vel)
 
-            velocity = move_vec * self.charge
-            
-            current_x = self.node.getLinearVelocity().x
-            current_y = self.node.getLinearVelocity().y
-            velocity.setX(current_x)
-            velocity.setY(current_y)
-            self.node.setLinearVelocity(velocity)
+        if self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
+            if self.jump_sequence:
+                self.jump_sequence.finish()
 
-            self.charge = self.config.jump_base
-
-            if self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
-                if self.jump_sequence:
-                    self.jump_sequence.finish()
-
-                jump_anim = ActorInterval(self.actor, self.JUMP_ANIM, startFrame=self.jump_crouch_frame, endFrame=self.jump_fly_frame)
-                finish_func = Func(self.actor.pose, self.JUMP_ANIM, self.jump_fly_frame + 1)
-                self.jump_sequence = Sequence(jump_anim, finish_func)
-                self.jump_sequence.start()
+            jump_anim = ActorInterval(self.actor, self.JUMP_ANIM, startFrame=self.jump_crouch_frame, endFrame=self.jump_fly_frame)
+            finish_func = Func(self.actor.pose, self.JUMP_ANIM, self.jump_fly_frame + 1)
+            self.jump_sequence = Sequence(jump_anim, finish_func)
+            self.jump_sequence.start()
 
     def do_climb(self):
         forward = self.np.getQuat().getForward()
@@ -280,46 +307,60 @@ class Character(DirectObject.DirectObject):
         if self.is_climbing:
             self.update_climb(dt)
             return
-        
-        if self.is_charging_jump:
-            if self.charge < self.config.jump_charge_max:
-                self.charge += self.config.jump_charge_rate
-            else:
-                self.perform_jump()
 
         move_x = float(self.keys['d']) - float(self.keys['q'])
-        move_y = float(self.keys['z']) - float(self.keys['s'])
-        move_vec = Vec3(move_x, move_y, 0)
+        move_y = 0.0
+        move_vec = Vec3(move_x, move_y, 0.0)
 
         on_ground = self.on_ground()
+        if on_ground:
+            self.coyote_timer = self.coyote_window
+        else:
+            self.coyote_timer = max(0.0, self.coyote_timer - dt)
+
+        if self.jump_buffer_timer > 0.0:
+            self.jump_buffer_timer = max(0.0, self.jump_buffer_timer - dt)
+            if self.coyote_timer > 0.0 and not self.is_attacking:
+                self.perform_jump()
+                self.jump_buffer_timer = 0.0
+                self.coyote_timer = 0.0
+
         can_climb, hit_pos, hit_normal = self.do_climb()
         if can_climb and not self.is_climbing and self.is_jumping:
             self.start_climb(hit_pos, hit_normal)
             return
 
+        vel = self.node.getLinearVelocity()
         if move_vec.length() > 0:
             self.is_moving = True
             move_vec.normalize()
-            velocity = move_vec * self.speed
-            current_z = self.node.getLinearVelocity().z
-            velocity.setZ(current_z)
-            self.node.setLinearVelocity(velocity)
+            desired_x = move_vec.x * self.speed
+            desired_y = move_vec.y * self.speed
+            accel = self.ground_accel if on_ground else self.air_accel
+            vel.setX(self._approach(vel.x, desired_x, accel * dt))
+            vel.setY(self._approach(vel.y, desired_y, accel * dt))
+            self.node.setLinearVelocity(vel)
 
             angle = math.degrees(math.atan2(move_x, -move_y))
-            self.np.setH(angle)
+            current_h = self.np.getH()
+            h_lerp = min(1.0, dt * 20.0)
+            self.np.setH(current_h + (((angle - current_h + 180.0) % 360.0) - 180.0) * h_lerp)
 
             current = self.actor.getCurrentAnim()
-            if on_ground and not self.is_jumping and not self.is_charging_jump and not self.is_attacking:
+            if on_ground and not self.is_jumping and not self.is_attacking:
                 if current != self.WALK_ANIM and self.WALK_ANIM in self.actor.getAnimNames():
                     self.actor.stop()
                     self.actor.loop(self.WALK_ANIM)
         else:
-            vel = self.node.getLinearVelocity()
-            vel.setX(0)
-            vel.setY(0)
+            if on_ground:
+                vel.setX(self._approach(vel.x, 0.0, self.ground_friction * dt))
+                vel.setY(self._approach(vel.y, 0.0, self.ground_friction * dt))
+            else:
+                vel.setX(self._approach(vel.x, 0.0, self.air_drag * dt))
+                vel.setY(self._approach(vel.y, 0.0, self.air_drag * dt))
             self.node.setLinearVelocity(vel)
 
-            if on_ground and not self.is_jumping and not self.is_charging_jump and not self.is_attacking:
+            if on_ground and not self.is_jumping and not self.is_attacking:
                 current = self.actor.getCurrentAnim()
                 if self.IDLE_ANIM and current != self.IDLE_ANIM:
                     self.actor.stop()
@@ -328,7 +369,7 @@ class Character(DirectObject.DirectObject):
 
         if on_ground and self.is_jumping:
             self.is_jumping = False
-            if not self.is_charging_jump and self.JUMP_ANIM:
+            if self.JUMP_ANIM:
                 self.actor.play(self.JUMP_ANIM, fromFrame=self.jump_fly_frame + 1)
         elif not on_ground:
             self.is_jumping = True

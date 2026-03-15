@@ -29,4 +29,5 @@ class PhysicsManager:
         self.world.setDebugNode(debug_node)
 
     def step(self, dt: float):
-        self.world.doPhysics(dt, 10, 0.008)
+        clamped_dt = min(max(dt, 0.0), 1.0 / 30.0)
+        self.world.doPhysics(clamped_dt, 12, 1.0 / 120.0)

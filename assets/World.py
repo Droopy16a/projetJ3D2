@@ -58,4 +58,4 @@ class World:
             print("failed")
             return (-10.0, 10.0)
 
-        return self._min_bound.x // 2, self._max_bound.x // 2
+        return float(self._min_bound.x), float(self._max_bound.x)
