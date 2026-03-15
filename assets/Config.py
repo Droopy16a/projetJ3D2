@@ -20,10 +20,12 @@ class Config:
     jump_charge_rate: float = 0.1
 
     player_model: str = "./assets/models/persoepe.glb"
-    mob_model: str = "./assets/models/mobA.glb"
+    mob_model: str = "./assets/models/mobAT.glb"
+    mob_visual_scale: float = 1.0
+    mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     cube_model: str = "./assets/models/box.glb"
     sword_model: str = "./assets/models/sword.glb"
-    boss_model : str = "./assets/models/boss.glb"
+    boss_model : str = "./assets/models/mobAn.glb"
 
     levels: list = field(default_factory=lambda: [
         {
