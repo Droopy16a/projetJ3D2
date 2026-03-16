@@ -29,16 +29,23 @@ class Config:
 
     levels: list = field(default_factory=lambda: [
         {
-            "level_model": "./assets/models/plat3.glb",
-            "ignore": ["mur_back", "plafond", "porte", "poteau"],
-            "size": 1.0,
+            "level_model": "./assets/models/modules/base.glb",
+            "ignore": ["ignore"],
+            "size": 2.0,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         },
         {
-            "level_model": "./assets/models/plat4.glb",
-            "ignore": ["mur", "tonneau", "box", "rid", "fontaine"],
-            "size": 0.5,
+            "level_model": "./assets/models/modules/stair_U.glb",
+            "ignore": ["ignore.001"],
+            "size": 2.0,
+            "pos": (0, 0, 0),
+            "Hpr": (0, 0, 0)
+        },
+        {
+            "level_model": "./assets/models/modules/stair_D.glb",
+            "ignore": ["ignore.002"],
+            "size": 2.0,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         }

@@ -87,6 +87,25 @@ class Mob(DirectObject.DirectObject):
 
         self.set_mode(mode)
 
+    def _reset_controls(self):
+        for k in self.keys:
+            self.keys[k] = False
+
+    def _ensure_ray_nodes(self):
+        for r in range(len(self.ray_vis)):
+            node = self.ray_node[r]
+            if node is None or node.isEmpty():
+                self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
+
+    def _cancel_attack(self):
+        if hasattr(self, "attack_seq"):
+            try:
+                if self.attack_seq and self.attack_seq.isPlaying():
+                    self.attack_seq.finish()
+            except Exception:
+                pass
+        self.is_attacking = False
+
     def _current_anim(self):
         if not self.actor:
             return None
@@ -117,8 +136,15 @@ class Mob(DirectObject.DirectObject):
         next_mode = mode.upper()
         if next_mode == self.mode:
             return
-
+        previous_mode = self.mode
         self.mode = next_mode
+
+        if previous_mode == 'PLAYER' and self._controls_bound:
+            # Stop listening to player input when leaving PLAYER mode.
+            self.ignoreAll()
+            self._controls_bound = False
+            self._reset_controls()
+            self._cancel_attack()
 
         if self.mode in ('AI', 'PLAYER', 'IDLE'):
             self.enable_physics()
@@ -132,6 +158,23 @@ class Mob(DirectObject.DirectObject):
             else:
                 self.disable_physics()
         elif self.mode == 'AI':
+            # Snap facing to +/-X so AI rays and movement are aligned.
+            heading = (self.np.getH() + 360.0) % 360.0
+            if heading > 180.0:
+                heading -= 360.0
+            if abs(heading - 90.0) <= abs(heading + 90.0):
+                self.direction = 1
+                self.np.setH(90.0)
+            else:
+                self.direction = -1
+                self.np.setH(-90.0)
+            self._cancel_attack()
+            self.is_moving = False
+            vel = self.node.getLinearVelocity()
+            vel.setX(0)
+            vel.setY(0)
+            self.node.setLinearVelocity(vel)
+            self._ensure_ray_nodes()
             self._loop_anim(self.WALK_ANIM)
         elif self.mode == 'IDLE':
             vel = self.node.getLinearVelocity()

@@ -15,13 +15,17 @@ from assets.Mob import Mob
 from assets.PhysicsManager import PhysicsManager
 from assets.World import World
 
+from direct.gui.DirectGui import DirectFrame, DirectWaitBar
 from direct.gui.OnscreenText import OnscreenText
 from direct.showbase.ShowBase import ShowBase
 from panda3d.core import (
     AmbientLight,
+    CardMaker,
     ConfigVariableString,
     DirectionalLight,
+    Fog,
     TextNode,
+    TransparencyAttrib,
     Vec3,
     Vec4,
     WindowProperties,
@@ -91,7 +95,7 @@ class Game(ShowBase):
             pbr.use_occlusion_maps = True
             pbr.enable_fog = True
         else:
-            print("simplepbr not installed, continuing with Panda3D default rendering.")
+            self.render.setShaderAuto()
 
         props = WindowProperties()
         props.setTitle(self.config.window_title)
@@ -100,20 +104,8 @@ class Game(ShowBase):
         GLOBAL_STATE.set_camera(self)
         self.camera.setPos(0, -40, 6)
         self.camera.setHpr(0, 0, 0)
-
-        dlight = DirectionalLight("sun")
-        dlight.setColor(Vec4(0.8, 0.8, 0.8, 1))
-        dlnp = self.render.attachNewNode(dlight)
-        dlnp.setHpr(45, -45, 0)
-        dlight.setShadowCaster(True, 2048, 2048)
-
-        self.setBackgroundColor(0, 0, 0, 1)
-        self.render.setLight(dlnp)
-
-        alight = AmbientLight("alight")
-        alight.setColor(Vec4(0.3, 0.3, 0.3, 1))
-        alnp = self.render.attachNewNode(alight)
-        self.render.setLight(alnp)
+        self._setup_lighting()
+        # self._setup_parallax_background()
 
         self.physics = PhysicsManager(self.config.gravity, self.render)
         self.world = World(self.config, self.render, self.loader, self.physics, index=1)
@@ -160,6 +152,7 @@ class Game(ShowBase):
         self.remote_targets: dict[str, dict[str, Any]] = {}
         self.active_vfx: list[dict[str, Any]] = []
         self.active_flashes: list[dict[str, Any]] = []
+        self.status_timer = 0.0
 
         self._setup_hud()
 
@@ -175,103 +168,606 @@ class Game(ShowBase):
         self.taskMgr.add(self._task_update, "update_task")
         self.taskMgr.add(self._task_websocket, "websocket_task")
 
+    def _setup_lighting(self):
+        self.render.clearLight()
+        self.setBackgroundColor(0,0,0, 1)
+
+        key = DirectionalLight("key_light")
+        key.setColor(Vec4(1.1, 1.02, 0.9, 1))
+        key.setShadowCaster(True, 2048, 2048)
+        key_np = self.render.attachNewNode(key)
+        key_np.setHpr(35, -50, 0)
+
+        fill = DirectionalLight("fill_light")
+        fill.setColor(Vec4(0.7, 0.35, 0.24, 1))
+        fill_np = self.render.attachNewNode(fill)
+        fill_np.setHpr(-45, -25, 0)
+
+        rim = DirectionalLight("rim_light")
+        rim.setColor(Vec4(0.85, 0.45, 0.4, 1))
+        rim_np = self.render.attachNewNode(rim)
+        rim_np.setHpr(145, -35, 0)
+
+        ambient = AmbientLight("ambient")
+        ambient.setColor(Vec4(0.08, 0.12, 0.3, 1))
+        ambient_np = self.render.attachNewNode(ambient)
+
+        self.render.setLight(key_np)
+        self.render.setLight(fill_np)
+        self.render.setLight(rim_np)
+        self.render.setLight(ambient_np)
+
+        # fog = Fog("scene_fog")
+        # fog.setColor(0.06, 0.08, 0.06)
+        # fog.setExpDensity(0.016)
+        # self.render.setFog(fog)
+
+    def _setup_parallax_background(self):
+        self.parallax_root = self.render.attachNewNode("parallax_root")
+        self.parallax_root.setBin("background", 0)
+        self.parallax_root.setDepthWrite(False)
+        self.parallax_root.setLightOff(1)
+
+        def _make_layer(
+            name: str,
+            texture_path: str,
+            y: float,
+            scale: float,
+            color: tuple[float, float, float, float],
+        ):
+            cm = CardMaker(name)
+            cm.setFrame(-220, 220, -120, 120)
+            np = self.parallax_root.attachNewNode(cm.generate())
+            np.setPos(0, y, 30)
+            np.setScale(scale)
+            np.setTransparency(TransparencyAttrib.MAlpha)
+            np.setTexture(self.loader.loadTexture(texture_path), 1)
+            np.setColorScale(*color)
+            return np
+
+        self.parallax_far = _make_layer(
+            "parallax_far",
+            "assets/images/background.jpg",
+            y=260,
+            scale=1.4,
+            color=(0.62, 0.7, 0.58, 1.0),
+        )
+        self.parallax_mid = _make_layer(
+            "parallax_mid",
+            "assets/images/eau.png",
+            y=200,
+            scale=1.25,
+            color=(0.3, 0.45, 0.32, 0.5),
+        )
+        self.parallax_near = _make_layer(
+            "parallax_near",
+            "assets/images/background.jpg",
+            y=150,
+            scale=1.15,
+            color=(0.32, 0.4, 0.3, 0.25),
+        )
+
+        self.parallax_layers = [
+            (self.parallax_far, Vec3(0, 260, 30), 0.012, 0.004, 0.02),
+            (self.parallax_mid, Vec3(0, 200, 30), 0.02, 0.006, 0.03),
+            (self.parallax_near, Vec3(0, 150, 30), 0.03, 0.009, 0.04),
+        ]
+        self.parallax_time = 0.0
+
+    def _update_parallax(self, dt: float):
+        if not hasattr(self, "parallax_layers"):
+            return
+        self.parallax_time += dt
+        cam_x = self.camera.getX()
+        cam_z = self.camera.getZ()
+        drift = math.sin(self.parallax_time * 0.45) * 0.02
+        for node, base_pos, factor_x, factor_z, drift_amp in self.parallax_layers:
+            node.setPos(
+                base_pos.x + cam_x * factor_x + drift * drift_amp,
+                base_pos.y,
+                base_pos.z + cam_z * factor_z,
+            )
+
     def _setup_hud(self):
-        self.role_text = OnscreenText(
+        panel_color = (0.05, 0.07, 0.1, 0.65)
+        panel_dark = (0.02, 0.03, 0.05, 0.85)
+        text_main = (0.92, 0.96, 1.0, 0.95)
+        text_sub = (0.72, 0.78, 0.86, 0.9)
+        accent = (0.45, 0.85, 1.0, 0.95)
+
+        self.ui_root = DirectFrame(
+            parent=self.aspect2d,
+            frameColor=(0, 0, 0, 0),
+        )
+        self.ui_root.setTransparency(TransparencyAttrib.MAlpha)
+
+        self.left_panel = DirectFrame(
+            parent=self.ui_root,
+            frameColor=panel_color,
+            frameSize=(0, 0.64, -0.24, 0),
+            pos=(-1.32, 0, 0.93),
+        )
+        self.left_panel.setTransparency(TransparencyAttrib.MAlpha)
+        self.role_label = OnscreenText(
             text="Connecting...",
-            pos=(-1.31, 0.92),
+            pos=(0.03, -0.06),
             align=TextNode.ALeft,
-            scale=0.048,
-            fg=(1, 1, 1, 1),
+            scale=0.05,
+            fg=text_main,
+            shadow=(0, 0, 0, 0.85),
             mayChange=True,
+            parent=self.left_panel,
         )
-        self.objective_text = OnscreenText(
-            text="Waiting for server role assignment.",
-            pos=(-1.31, 0.85),
+        self.objective_label = OnscreenText(
+            text="Waiting for role assignment.",
+            pos=(0.03, -0.13),
             align=TextNode.ALeft,
-            scale=0.042,
-            fg=(0.9, 0.9, 0.9, 1),
+            scale=0.04,
+            fg=text_sub,
+            shadow=(0, 0, 0, 0.8),
             mayChange=True,
+            parent=self.left_panel,
         )
-        self.health_text = OnscreenText(
+        self.phase_label = OnscreenText(
             text="",
-            pos=(-1.31, 0.78),
-            align=TextNode.ALeft,
-            scale=0.042,
-            fg=(0.95, 0.85, 0.65, 1),
-            mayChange=True,
-        )
-        self.cooldown_text = OnscreenText(
-            text="",
-            pos=(-1.31, 0.71),
+            pos=(0.03, -0.2),
             align=TextNode.ALeft,
             scale=0.036,
-            fg=(0.75, 0.95, 0.95, 1),
+            fg=accent,
+            shadow=(0, 0, 0, 0.8),
             mayChange=True,
+            parent=self.left_panel,
         )
-        self.fps_text = OnscreenText(
+
+        self.right_panel = DirectFrame(
+            parent=self.ui_root,
+            frameColor=panel_color,
+            frameSize=(-0.64, 0, -0.24, 0),
+            pos=(1.32, 0, 0.93),
+        )
+        self.right_panel.setTransparency(TransparencyAttrib.MAlpha)
+        self.hero_label = OnscreenText(
+            text="HERO",
+            pos=(-0.6, -0.05),
+            align=TextNode.ALeft,
+            scale=0.035,
+            fg=text_sub,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.right_panel,
+        )
+        self.hero_bar = DirectWaitBar(
             text="",
-            pos=(-1.31, 0.64),
+            range=HERO_MAX_HP,
+            value=HERO_MAX_HP,
+            barColor=(0.25, 0.85, 0.45, 0.9),
+            frameColor=panel_dark,
+            frameSize=(0, 0.52, -0.02, 0.02),
+            pos=(-0.6, 0, -0.095),
+            parent=self.right_panel,
+        )
+        self.hero_hp_text = OnscreenText(
+            text=f"{HERO_MAX_HP}/{HERO_MAX_HP}",
+            pos=(0.26, -0.01),
+            align=TextNode.ACenter,
+            scale=0.032,
+            fg=text_main,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.hero_bar,
+        )
+        self.boss_label = OnscreenText(
+            text="BOSS",
+            pos=(-0.6, -0.135),
+            align=TextNode.ALeft,
+            scale=0.035,
+            fg=text_sub,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.right_panel,
+        )
+        self.boss_bar = DirectWaitBar(
+            text="",
+            range=BOSS_MAX_HP,
+            value=BOSS_MAX_HP,
+            barColor=(0.95, 0.45, 0.35, 0.9),
+            frameColor=panel_dark,
+            frameSize=(0, 0.52, -0.02, 0.02),
+            pos=(-0.6, 0, -0.175),
+            parent=self.right_panel,
+        )
+        self.boss_hp_text = OnscreenText(
+            text=f"{BOSS_MAX_HP}/{BOSS_MAX_HP}",
+            pos=(0.26, -0.01),
+            align=TextNode.ACenter,
+            scale=0.032,
+            fg=text_main,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.boss_bar,
+        )
+        self.mob_count_text = OnscreenText(
+            text=f"Mobs: 0/{MAX_ACTIVE_MOBS}",
+            pos=(-0.6, -0.215),
             align=TextNode.ALeft,
             scale=0.034,
-            fg=(0.8, 0.95, 0.8, 1),
+            fg=text_sub,
+            shadow=(0, 0, 0, 0.8),
             mayChange=True,
+            parent=self.right_panel,
         )
+
+        self.action_panel = DirectFrame(
+            parent=self.ui_root,
+            frameColor=panel_color,
+            frameSize=(-0.7, 0.7, -0.15, 0),
+            pos=(0, 0, -0.88),
+        )
+        self.action_panel.setTransparency(TransparencyAttrib.MAlpha)
+        self.control_text = OnscreenText(
+            text="Control: --",
+            pos=(-0.66, -0.04),
+            align=TextNode.ALeft,
+            scale=0.038,
+            fg=text_sub,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.action_panel,
+        )
+        self.combo_text = OnscreenText(
+            text="Combo 0",
+            pos=(0.66, -0.04),
+            align=TextNode.ARight,
+            scale=0.038,
+            fg=accent,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.action_panel,
+        )
+        self.attack_bar = DirectWaitBar(
+            text="",
+            range=HERO_ATTACK_COOLDOWN,
+            value=HERO_ATTACK_COOLDOWN,
+            barColor=(0.45, 0.85, 1.0, 0.9),
+            frameColor=panel_dark,
+            frameSize=(0, 1.25, -0.02, 0.02),
+            pos=(-0.62, 0, -0.085),
+            parent=self.action_panel,
+        )
+        self.attack_text = OnscreenText(
+            text="Attack Ready",
+            pos=(0.62, -0.01),
+            align=TextNode.ACenter,
+            scale=0.034,
+            fg=text_main,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.attack_bar,
+        )
+        self.spawn_bar = DirectWaitBar(
+            text="",
+            range=SPAWN_COOLDOWN,
+            value=SPAWN_COOLDOWN,
+            barColor=(1.0, 0.7, 0.35, 0.9),
+            frameColor=panel_dark,
+            frameSize=(0, 1.25, -0.02, 0.02),
+            pos=(-0.62, 0, -0.125),
+            parent=self.action_panel,
+        )
+        self.spawn_text = OnscreenText(
+            text="Spawn Ready",
+            pos=(0.62, -0.01),
+            align=TextNode.ACenter,
+            scale=0.032,
+            fg=text_main,
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.spawn_bar,
+        )
+        self.spawn_bar.hide()
+        self.spawn_text.hide()
+
+        self.status_panel = DirectFrame(
+            parent=self.ui_root,
+            frameColor=panel_color,
+            frameSize=(-0.6, 0.6, -0.06, 0),
+            pos=(0, 0, 0.98),
+        )
+        self.status_panel.setTransparency(TransparencyAttrib.MAlpha)
         self.status_text = OnscreenText(
             text="",
-            pos=(0, 0.9),
+            pos=(0, -0.04),
             align=TextNode.ACenter,
-            scale=0.055,
-            fg=(1, 0.95, 0.75, 1),
+            scale=0.045,
+            fg=text_main,
+            shadow=(0, 0, 0, 0.9),
             mayChange=True,
+            parent=self.status_panel,
         )
+        self.status_panel.hide()
+        self._setup_hero_ui()
+
+    def _setup_hero_ui(self):
+        self.hero_ui_root = DirectFrame(
+            parent=self.aspect2d,
+            frameColor=(0, 0, 0, 0),
+        )
+        self.hero_ui_root.setTransparency(TransparencyAttrib.MAlpha)
+
+        self.hero_bars_root = DirectFrame(
+            parent=self.hero_ui_root,
+            frameColor=(0, 0, 0, 0),
+            pos=(-1.28, 0, 0.93),
+        )
+
+        bar_width = 0.58
+        bar_height = 0.035
+        bar_shadow = (0.0, 0.0, 0.0, 0.35)
+
+        def make_bar(name: str, y: float, x: float, color: tuple[float, float, float, float], label: str):
+            bg = DirectFrame(
+                parent=self.hero_bars_root,
+                frameColor=bar_shadow,
+                frameSize=(0, bar_width, -bar_height, 0),
+                pos=(x, 0, y),
+            )
+            bg.setTransparency(TransparencyAttrib.MAlpha)
+            bar = DirectWaitBar(
+                parent=bg,
+                text="",
+                range=1.0,
+                value=1.0,
+                frameColor=(0, 0, 0, 0),
+                barColor=color,
+                frameSize=(0, bar_width, -bar_height, 0),
+                pos=(0, 0, 0),
+            )
+            label_text = OnscreenText(
+                text=f"{label}",
+                pos=(bar_width + 0.08, -bar_height * 0.7),
+                align=TextNode.ALeft,
+                scale=0.038,
+                fg=(0.95, 0.95, 0.95, 0.92),
+                shadow=(0, 0, 0, 0.85),
+                mayChange=True,
+                parent=bg,
+            )
+            return bar, label_text
+
+        self.hero_pv_bar, self.hero_pv_label = make_bar(
+            "pv",
+            y=0.0,
+            x=0.0,
+            color=(0.86, 0.22, 0.2, 0.95),
+            label="PV",
+        )
+        self.hero_pm_bar, self.hero_pm_label = make_bar(
+            "pm",
+            y=-0.055,
+            x=0.02,
+            color=(0.32, 0.62, 0.9, 0.95),
+            label="PM",
+        )
+        self.hero_endurance_bar, self.hero_endurance_label = make_bar(
+            "endurance",
+            y=-0.11,
+            x=0.04,
+            color=(0.35, 0.75, 0.35, 0.95),
+            label="ENDURANCE",
+        )
+
+        self.hero_objective_text = OnscreenText(
+            text="",
+            pos=(-1.26, 0.74),
+            align=TextNode.ALeft,
+            scale=0.038,
+            fg=(0.9, 0.92, 0.95, 0.9),
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.hero_ui_root,
+        )
+
+        self.hero_bottom_root = DirectFrame(
+            parent=self.hero_ui_root,
+            frameColor=(0, 0, 0, 0),
+            pos=(-1.26, 0, -0.76),
+        )
+
+        self.hero_capacity_label = OnscreenText(
+            text="SYMBOLE DE CAPACITE",
+            pos=(0.02, 0.14),
+            align=TextNode.ALeft,
+            scale=0.032,
+            fg=(0.9, 0.9, 0.9, 0.9),
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.hero_bottom_root,
+        )
+        self.hero_capacity_outer = DirectFrame(
+            parent=self.hero_bottom_root,
+            frameColor=(0.9, 0.9, 0.9, 0.15),
+            frameSize=(-0.085, 0.085, -0.085, 0.085),
+            pos=(0.08, 0, 0.0),
+        )
+        self.hero_capacity_outer.setTransparency(TransparencyAttrib.MAlpha)
+        self.hero_capacity_inner = DirectFrame(
+            parent=self.hero_capacity_outer,
+            frameColor=(0.05, 0.05, 0.05, 0.7),
+            frameSize=(-0.075, 0.075, -0.075, 0.075),
+            pos=(0, 0, 0),
+        )
+        self.hero_capacity_inner.setTransparency(TransparencyAttrib.MAlpha)
+        self.hero_capacity_icon = OnscreenText(
+            text="*",
+            pos=(0, -0.03),
+            align=TextNode.ACenter,
+            scale=0.08,
+            fg=(0.95, 0.95, 0.95, 0.9),
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.hero_capacity_inner,
+        )
+
+        self.hero_items_label = OnscreenText(
+            text="OBJETS OBTENUS",
+            pos=(0.32, 0.03),
+            align=TextNode.ALeft,
+            scale=0.032,
+            fg=(0.9, 0.9, 0.9, 0.9),
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.hero_bottom_root,
+        )
+        self.hero_item_slots_root = DirectFrame(
+            parent=self.hero_bottom_root,
+            frameColor=(0, 0, 0, 0),
+            pos=(0.32, 0, -0.06),
+        )
+        self.hero_item_slots: list[DirectFrame] = []
+        for i in range(4):
+            slot = DirectFrame(
+                parent=self.hero_item_slots_root,
+                frameColor=(0.08, 0.08, 0.08, 0.7),
+                frameSize=(0, 0.08, -0.08, 0),
+                pos=(i * 0.095, 0, 0),
+            )
+            slot.setTransparency(TransparencyAttrib.MAlpha)
+            self.hero_item_slots.append(slot)
+
+        self.hero_ui_root.hide()
 
     def _set_status(self, text: str):
         self.status_text.setText(text)
+        self.status_timer = 2.8
+        self.status_panel.show()
+        self.status_panel.setAlphaScale(0.9)
+        self.status_text.setAlphaScale(1.0)
+
+    def _update_status(self, dt: float):
+        if self.status_timer <= 0.0:
+            return
+        self.status_timer = max(0.0, self.status_timer - dt)
+        if self.status_timer <= 0.0:
+            self.status_panel.hide()
+            return
+        fade_window = 0.6
+        if self.status_timer < fade_window:
+            alpha = max(0.0, self.status_timer / fade_window)
+            self.status_panel.setAlphaScale(0.9 * alpha)
+            self.status_text.setAlphaScale(alpha)
 
     def _update_hud(self):
+        now = time.monotonic()
         if self.player_id == 0:
-            self.role_text.setText("Role: Hero")
+            role = "Hero"
+            control = "Hero"
+            self.hero_ui_root.show()
+            self.left_panel.hide()
+            self.right_panel.hide()
+            self.action_panel.hide()
         elif self.player_id == 1:
-            self.role_text.setText("Role: Boss")
+            role = "Boss"
+            control = self._control_label(self.controlled_entity).title()
+            self.hero_ui_root.hide()
+            self.left_panel.show()
+            self.right_panel.show()
+            self.action_panel.show()
         else:
-            self.role_text.setText("Connecting...")
+            role = "Connecting"
+            control = "--"
+            self.hero_ui_root.hide()
+            self.left_panel.show()
+            self.right_panel.show()
+            self.action_panel.show()
+
+        self.role_label.setText(f"Role: {role}")
+        self.control_text.setText(f"Control: {control}")
 
         if self.winner:
-            self.objective_text.setText("Game over.")
+            self.objective_label.setText("Game over.")
         elif self.player_id == 0:
             if self.boss_phase_unlocked:
-                self.objective_text.setText("Objective: defeat the boss.")
+                self.objective_label.setText("Objective: defeat the boss.")
             else:
-                self.objective_text.setText(f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss.")
+                self.objective_label.setText(f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss.")
         elif self.player_id == 1:
-            self.objective_text.setText("Objective: kill the hero before they kill you.")
+            self.objective_label.setText("Objective: kill the hero before they kill you.")
         else:
-            self.objective_text.setText("Waiting for role assignment.")
+            self.objective_label.setText("Waiting for role assignment.")
+
+        if self.winner:
+            self.phase_label.setText(f"{self.winner.title()} wins!")
+        elif self.boss_phase_unlocked:
+            self.phase_label.setText("Phase 2: boss vulnerable")
+        else:
+            self.phase_label.setText("")
+
+        if self.player_id == 0:
+            if self.winner:
+                self.hero_objective_text.setText("Game over.")
+            elif self.boss_phase_unlocked:
+                self.hero_objective_text.setText("Objective: defeat the boss.")
+            else:
+                self.hero_objective_text.setText(
+                    f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss."
+                )
+
+        hero_hp = max(0, min(self.hero_hp, HERO_MAX_HP))
+        boss_hp = max(0, min(self.boss_hp, BOSS_MAX_HP))
+        self.hero_bar["range"] = HERO_MAX_HP
+        self.hero_bar["value"] = hero_hp
+        self.hero_hp_text.setText(f"{hero_hp}/{HERO_MAX_HP}")
+        self.boss_bar["range"] = BOSS_MAX_HP
+        self.boss_bar["value"] = boss_hp
+        self.boss_hp_text.setText(f"{boss_hp}/{BOSS_MAX_HP}")
 
         mob_count = len(self.local_mobs) if self.player_id == 1 else len(self.remote_mobs)
-        self.health_text.setText(
-            f"Hero HP: {self.hero_hp} | Boss HP: {self.boss_hp} | Mobs: {mob_count}"
-        )
+        self.mob_count_text.setText(f"Mobs: {mob_count}/{MAX_ACTIVE_MOBS}")
 
         attack_cd = self._get_current_attack_cooldown()
         cd_key = self._get_attack_cooldown_key()
         attack_left = max(0.0, attack_cd - (time.monotonic() - self.last_attack_times[cd_key]))
         combo_step = self.combo_state[cd_key]["step"] + 1 if self.combo_state[cd_key]["step"] >= 0 else 0
+        self.combo_text.setText(f"Combo {combo_step}")
+
+        self.attack_bar["range"] = max(0.001, attack_cd)
+        self.attack_bar["value"] = max(0.0, attack_cd - attack_left)
+        if attack_left <= 0.001:
+            self.attack_text.setText("Attack Ready")
+        else:
+            self.attack_text.setText(f"Attack {attack_left:.2f}s")
+
         if self.player_id == 1:
             spawn_left = max(0.0, SPAWN_COOLDOWN - (time.monotonic() - self.last_spawn_time))
-            self.cooldown_text.setText(
-                f"Attack CD: {attack_left:.2f}s | Combo: {combo_step} | Spawn CD: {spawn_left:.2f}s | Spawned: {len(self.local_mobs)}/{MAX_ACTIVE_MOBS}"
-            )
-        elif self.player_id == 0:
-            self.cooldown_text.setText(f"Attack CD: {attack_left:.2f}s | Combo: {combo_step}")
+            self.spawn_bar.show()
+            self.spawn_text.show()
+            self.spawn_bar["range"] = SPAWN_COOLDOWN
+            self.spawn_bar["value"] = max(0.0, SPAWN_COOLDOWN - spawn_left)
+            if spawn_left <= 0.001:
+                self.spawn_text.setText(f"Spawn Ready ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})")
+            else:
+                self.spawn_text.setText(
+                    f"Spawn {spawn_left:.2f}s ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})"
+                )
         else:
-            self.cooldown_text.setText("")
+            self.spawn_bar.hide()
+            self.spawn_text.hide()
 
-        fps = globalClock.getAverageFrameRate()
-        if fps > 0:
-            self.fps_text.setText(f"FPS: {fps:.1f}")
-        else:
-            self.fps_text.setText("FPS: --")
+        if self.player_id == 0:
+            pv_ratio = 0.0 if HERO_MAX_HP <= 0 else hero_hp / HERO_MAX_HP
+            self.hero_pv_bar["value"] = max(0.0, min(1.0, pv_ratio))
+
+            pm_ratio = 1.0
+            if attack_cd > 0.0:
+                pm_ratio = 1.0 - (attack_left / attack_cd)
+            self.hero_pm_bar["value"] = max(0.0, min(1.0, pm_ratio))
+
+            end_ratio = 1.0
+            state = self.combo_state.get(self._get_attack_cooldown_key(), {"step": -1, "last_time": 0.0})
+            if state.get("step", -1) >= 0:
+                elapsed = max(0.0, now - float(state.get("last_time", now)))
+                end_ratio = max(0.0, 1.0 - (elapsed / COMBO_WINDOW))
+            self.hero_endurance_bar["value"] = max(0.0, min(1.0, end_ratio))
 
     def _init_entities_for_role(self):
         if self.hero or self.boss:
@@ -409,11 +905,11 @@ class Game(ShowBase):
     async def websocket_handler(self):
         while True:
             try:
-                print(f"Connecting to {self.ws_uri}...")
+                self._set_status("Connecting to server...")
                 async with websockets.connect(self.ws_uri) as websocket:
                     self.websocket = websocket
                     self._connection_established = True
-                    self._set_status(f"Connected to {self.ws_uri}")
+                    self._set_status("Connected.")
 
                     while True:
                         try:
@@ -428,12 +924,12 @@ class Game(ShowBase):
             except (websockets.exceptions.ConnectionClosed, OSError) as exc:
                 self._connection_established = False
                 self.websocket = None
-                self._set_status(f"Disconnected ({exc}). Reconnecting...")
+                self._set_status("Disconnected. Reconnecting...")
                 await asyncio.sleep(1.5)
             except Exception as exc:  # keep retry loop alive on protocol or runtime errors
                 self._connection_established = False
                 self.websocket = None
-                self._set_status(f"Network error ({exc}). Reconnecting...")
+                self._set_status("Network error. Reconnecting...")
                 await asyncio.sleep(1.5)
 
     def _handle_server_message(self, raw_message: str):
@@ -1049,6 +1545,9 @@ class Game(ShowBase):
                 self.ai_attack_clock[mob_id] = now
                 self._queue_message({"type": "attack", "target": "hero", "damage": MOB_DAMAGE})
                 self._play_attack_vfx(mob.np)
+                # Show impact feedback locally for AI hits as well.
+                if self.hero:
+                    self._play_hit_vfx(self.hero.np, MOB_DAMAGE)
 
     def shake_camera(self, intensity: float = 0.35, duration: float = 0.12):
         original_pos = self.camera.getPos(self.render)
@@ -1119,6 +1618,8 @@ class Game(ShowBase):
         if self.hitstop_remaining > 0.0:
             self.hitstop_remaining = max(0.0, self.hitstop_remaining - dt)
             self._update_vfx(dt)
+            self._update_parallax(dt)
+            self._update_status(dt)
             self._update_hud()
             return task.cont
 
@@ -1142,6 +1643,8 @@ class Game(ShowBase):
 
         self._update_vfx(dt)
         self._update_camera_follow(dt)
+        self._update_parallax(dt)
+        self._update_status(dt)
         self._update_hud()
         return task.cont
 
