@@ -58,6 +58,7 @@ class Character(DirectObject.DirectObject):
         self.is_jumping = False
         self.is_attacking = False
         self._remote_attack_latched = False
+        self._remote_jump_latched = False
         self.jump_buffer_timer = 0.0
         self.jump_buffer_window = 0.14
         self.coyote_timer = 0.0
@@ -143,7 +144,7 @@ class Character(DirectObject.DirectObject):
 
     def get_network_anim_state(self) -> dict[str, bool]:
         vel = self.node.getLinearVelocity()
-        moving = abs(vel.x) > 0.15 or abs(vel.y) > 0.15
+        moving = self.is_moving or abs(vel.x) > 0.15 or abs(vel.y) > 0.15
         return {
             "moving": moving,
             "jumping": self.is_jumping,
@@ -156,12 +157,33 @@ class Character(DirectObject.DirectObject):
             self._play_attack_animation()
         self._remote_attack_latched = attacking
 
+        jump_started = jumping and not self._remote_jump_latched
+        jump_ended = (not jumping) and self._remote_jump_latched
+        self._remote_jump_latched = jumping
+
         if attacking:
             return
 
+        if jump_started and self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
+            if self.jump_sequence:
+                self.jump_sequence.finish()
+
+            jump_anim = ActorInterval(
+                self.actor,
+                self.JUMP_ANIM,
+                startFrame=self.jump_crouch_frame,
+                endFrame=self.jump_fly_frame,
+            )
+            finish_func = Func(self.actor.pose, self.JUMP_ANIM, self.jump_fly_frame + 1)
+            self.jump_sequence = Sequence(jump_anim, finish_func)
+            self.jump_sequence.start()
+            return
+
         if jumping and self.JUMP_ANIM:
-            if self.actor.getCurrentAnim() != self.JUMP_ANIM:
-                self.actor.loop(self.JUMP_ANIM)
+            return
+
+        if jump_ended and self.JUMP_ANIM:
+            self.actor.play(self.JUMP_ANIM, fromFrame=self.jump_fly_frame + 1)
             return
 
         if moving and self.WALK_ANIM:

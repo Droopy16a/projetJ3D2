@@ -20,7 +20,7 @@ class Config:
     jump_charge_rate: float = 0.1
 
     player_model: str = "./assets/models/persoepe.glb"
-    mob_model: str = "./assets/models/mobAT.glb"
+    mob_model: str = "./assets/models/mobA_copy.glb"
     mob_visual_scale: float = 1.0
     mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     cube_model: str = "./assets/models/box.glb"

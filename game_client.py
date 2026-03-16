@@ -5,6 +5,7 @@ import json
 import os
 import random
 import time
+import math
 from typing import Any
 
 from assets.Character import Character
@@ -40,9 +41,12 @@ ConfigVariableString("bullet-filter-algorithm").setValue("groups-mask")
 
 DEFAULT_PORT = 8765
 DEFAULT_HOST = "127.0.0.1"
-NETWORK_UPDATE_INTERVAL = 0.05
-NETWORK_SMOOTHING = 14.0
-SNAP_DISTANCE = 8.0
+NETWORK_UPDATE_INTERVAL = 0.033
+NETWORK_SMOOTHING = 18.0
+SNAP_DISTANCE = 6.0
+NETWORK_PREDICTION_LIMIT = 0.18
+NETWORK_MOVE_SPEED = 0.25
+NETWORK_MOVE_DIST = 0.06
 CAMERA_SMOOTHING = 10.0
 ATTACK_INPUT_BUFFER = 0.14
 HITSTOP_DURATION = 0.045
@@ -74,10 +78,18 @@ class Game(ShowBase):
         self.disableMouse()
 
         if simplepbr is not None:
-            simplepbr.init(
+            pbr = simplepbr.init(
                 enable_shadows=True,
                 env_map="./assets/env/cubemap.env",
             )
+            pbr.use_hardware_skinning = True
+            pbr.msaa_samples = 8
+            pbr.enable_shadows = True
+            pbr.use_330 = True # export MESA_GL_VERSION_OVERRIDE="3.00 ES"
+            pbr.use_normal_maps = True
+            pbr.use_emission_maps = True
+            pbr.use_occlusion_maps = True
+            pbr.enable_fog = True
         else:
             print("simplepbr not installed, continuing with Panda3D default rendering.")
 
@@ -192,6 +204,14 @@ class Game(ShowBase):
             fg=(0.75, 0.95, 0.95, 1),
             mayChange=True,
         )
+        self.fps_text = OnscreenText(
+            text="",
+            pos=(-1.31, 0.64),
+            align=TextNode.ALeft,
+            scale=0.034,
+            fg=(0.8, 0.95, 0.8, 1),
+            mayChange=True,
+        )
         self.status_text = OnscreenText(
             text="",
             pos=(0, 0.9),
@@ -242,6 +262,12 @@ class Game(ShowBase):
             self.cooldown_text.setText(f"Attack CD: {attack_left:.2f}s | Combo: {combo_step}")
         else:
             self.cooldown_text.setText("")
+
+        fps = globalClock.getAverageFrameRate()
+        if fps > 0:
+            self.fps_text.setText(f"FPS: {fps:.1f}")
+        else:
+            self.fps_text.setText("FPS: --")
 
     def _init_entities_for_role(self):
         if self.hero or self.boss:
@@ -329,6 +355,14 @@ class Game(ShowBase):
         attacking: bool = False,
         jumping: bool = False,
     ):
+        now = time.monotonic()
+        prev = self.remote_targets.get(key)
+        vx = vz = 0.0
+        if prev is not None:
+            dt = max(0.001, now - float(prev.get("last_update", now)))
+            vx = (x - float(prev.get("x", x))) / dt
+            vz = (z - float(prev.get("z", z))) / dt
+
         self.remote_targets[key] = {
             "x": x,
             "z": z,
@@ -336,6 +370,9 @@ class Game(ShowBase):
             "moving": moving,
             "attacking": attacking,
             "jumping": jumping,
+            "vx": vx,
+            "vz": vz,
+            "last_update": now,
         }
 
     def _angle_lerp(self, current: float, target: float, factor: float) -> float:
@@ -690,16 +727,24 @@ class Game(ShowBase):
                 self.active_flashes.remove(flash)
 
     def _update_remote_motion(self, dt: float):
-        blend = min(1.0, dt * NETWORK_SMOOTHING)
+        now = time.monotonic()
         for key, target in list(self.remote_targets.items()):
+            smoothing = NETWORK_SMOOTHING
+            prediction_limit = NETWORK_PREDICTION_LIMIT
+            if key.startswith("mob:"):
+                smoothing *= 1.6
+                prediction_limit *= 1.4
+            blend = 1.0 - math.exp(-smoothing * dt)
             entity = self._resolve_remote_entity(key)
             if entity is None:
                 self.remote_targets.pop(key, None)
                 continue
 
             np = entity.np
-            tx = float(target["x"])
-            tz = float(target["z"])
+            age = max(0.0, now - float(target.get("last_update", now)))
+            predict = min(age, prediction_limit)
+            tx = float(target["x"]) + float(target.get("vx", 0.0)) * predict
+            tz = float(target["z"]) + float(target.get("vz", 0.0)) * predict
             th = float(target["h"])
             dx = tx - np.getX()
             dz = tz - np.getZ()
@@ -713,14 +758,17 @@ class Game(ShowBase):
                 np.setZ(np.getZ() + dz * blend)
             np.setH(self._angle_lerp(np.getH(), th, blend))
 
+            speed = math.hypot(float(target.get("vx", 0.0)), float(target.get("vz", 0.0)))
+            moving = bool(target.get("moving", False)) or speed > NETWORK_MOVE_SPEED or dist > NETWORK_MOVE_DIST
+
             if key == "hero" and self.hero:
                 self.hero.apply_remote_animation(
-                    bool(target["moving"]),
+                    moving,
                     bool(target["attacking"]),
                     bool(target["jumping"]),
                 )
             else:
-                entity.apply_remote_animation(bool(target["moving"]), bool(target["attacking"]))
+                entity.apply_remote_animation(moving, bool(target["attacking"]))
 
     def on_attack_input(self):
         if self.player_id is None or self.winner or not self.hero or not self.boss:
@@ -946,6 +994,8 @@ class Game(ShowBase):
         now = time.monotonic()
         for mob_id, mob in self.local_mobs.items():
             if mob.mode != "AI":
+                continue
+            if not mob.is_attacking:
                 continue
             if self._entity_distance(mob.np, self.hero.np) > ATTACK_RANGE:
                 continue

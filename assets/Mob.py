@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import math
 from typing import Dict
-import contextlib
-from pathlib import Path
-
 from panda3d.core import (
     Vec3,
     TransformState, 
@@ -24,8 +21,6 @@ from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 
 def bit(gid: int) -> BitMask32:
     return BitMask32.bit(gid)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 class Mob(DirectObject.DirectObject):
     def __init__(self, config: Config, render, loader, physics: PhysicsManager,
@@ -58,16 +53,22 @@ class Mob(DirectObject.DirectObject):
         index = GLOBAL_STATE.increase_mob_number()
         self.np.setCollideMask(bit(index))
 
-        self.visual = self._load_visual(config.mob_model)
-        self.visual.reparentTo(self.np)
-        self.visual.setScale(float(self.config.mob_visual_scale))
-        ox, oy, oz = self.config.mob_visual_offset
-        self.visual.setPos(float(ox), float(oy), float(oz))
+        self.actor = Actor(self.config.mob_model)
+        self.actor.reparentTo(self.np)
+        # self.actor.setScale(float(self.config.mob_visual_scale))
+        # ox, oy, oz = self.config.mob_visual_offset
+        # self.actor.setPos(float(ox), float(oy), float(oz))
 
         anims = set(self.actor.getAnimNames()) if self.actor else set()
-        self.ATTACK_ANIM = 'atack' if 'atack' in anims else None
-        self.WALK_ANIM = 'run' if 'run' in anims else None
-        self.IDLE_ANIM = 'idle' if 'idle' in anims else (self.WALK_ANIM or (next(iter(anims)) if anims else None))
+        
+        # Improved animation detection (case-insensitive and partial matching)
+        self.ATTACK_ANIM = next((a for a in anims if 'atack' in a.lower() or 'attack' in a.lower()), None)
+        self.WALK_ANIM = next((a for a in anims if 'run' in a.lower() or 'walk' in a.lower()), None)
+        self.IDLE_ANIM = next((a for a in anims if 'idle' in a.lower()), None)
+        
+        # Fallbacks
+        if not self.IDLE_ANIM:
+            self.IDLE_ANIM = self.WALK_ANIM or (next(iter(anims)) if anims else None)
 
         self.speed = 2.5
         self.control_speed = 5.0
@@ -85,47 +86,6 @@ class Mob(DirectObject.DirectObject):
             self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
         self.set_mode(mode)
-
-    def _load_visual(self, model_path: str):
-        self.actor = None
-        resolved_path = self._resolve_model_path(model_path)
-
-        try:
-            model = self.loader.loadModel(resolved_path)
-        except Exception as e:
-            print(f"[Mob] Failed to load model '{model_path}' (resolved '{resolved_path}'), using fallback cube., exception : {e}")
-            model = self.loader.loadModel(self.config.cube_model)
-        if model.isEmpty():
-            print(f"[Mob] Loaded empty model '{model_path}', using fallback cube.")
-            model = self.loader.loadModel(self.config.cube_model)
-
-        # Avoid Actor warnings on static meshes (eg. mobA.glb).
-        has_character_rig = model.find_all_matches("**/+Character").get_num_paths() > 0
-        if has_character_rig:
-            with contextlib.suppress(Exception):
-                candidate = Actor(resolved_path)
-                model.removeNode()
-                self.actor = candidate
-                return self.actor
-
-        return model
-
-    def _resolve_model_path(self, model_path: str) -> str:
-        p = Path(model_path)
-        candidates = []
-
-        if p.is_absolute():
-            candidates.append(p)
-        else:
-            cleaned = Path(str(model_path).replace("\\", "/").lstrip("./"))
-            candidates.append(PROJECT_ROOT / cleaned)
-            candidates.append(Path.cwd() / cleaned)
-            candidates.append(p)
-
-        for candidate in candidates:
-            if candidate.exists():
-                return str(candidate)
-        return str(model_path)
 
     def _current_anim(self):
         if not self.actor:
@@ -241,7 +201,7 @@ class Mob(DirectObject.DirectObject):
 
     def get_network_anim_state(self) -> dict[str, bool]:
         vel = self.node.getLinearVelocity()
-        moving = abs(vel.x) > 0.1 or abs(vel.y) > 0.1
+        moving = self.is_moving or abs(vel.x) > 0.1 or abs(vel.y) > 0.1
         return {
             "moving": moving,
             "attacking": self.is_attacking,
@@ -249,11 +209,10 @@ class Mob(DirectObject.DirectObject):
 
     def apply_remote_animation(self, moving: bool, attacking: bool):
         self.is_moving = moving
-        if attacking and not self._remote_attack_latched:
-            self.perform_attack(force=True)
-        self._remote_attack_latched = attacking
-
         if attacking:
+            self.perform_attack(force=True)
+
+        if self.is_attacking:
             return
 
         if moving and self.WALK_ANIM:
@@ -295,9 +254,8 @@ class Mob(DirectObject.DirectObject):
             self.ray_node[nb] = self.render.attachNewNode(self.ray_vis[nb].create())
 
         if hitzone.hasHit() and hitzone.getNode().getName() == 'Character':
-            if self.ATTACK_ANIM and current != self.ATTACK_ANIM and self.actor:
-                self._stop_anim()
-                self.actor.play(self.ATTACK_ANIM)
+            if not self.is_attacking:
+                self.perform_attack(force=True)
         elif result.hasHit() and result.getNode() != self.node and result.getNode().getName() != 'mob':
             self.direction *= -1
             self.np.setH(self.np.getH() + 180)
@@ -326,6 +284,7 @@ class Mob(DirectObject.DirectObject):
         else:
             vel.setX(self._approach(vel.x, 0.0, self.ground_friction * dt))
         vel.setY(0.0)
+        self.is_moving = abs(vel.x) > 0.1 or abs(vel.y) > 0.1
         self.node.setLinearVelocity(vel)
 
     def update_player(self, dt: float):
@@ -380,4 +339,3 @@ class Mob(DirectObject.DirectObject):
                 node.removeNode()
         if self.np and not self.np.isEmpty():
             self.np.removeNode()
-
