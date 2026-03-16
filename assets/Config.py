@@ -13,6 +13,11 @@ class Config:
     boss_mass: float = 200.0
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
     debug_physics: bool = True
+    use_modular_world: bool = True
+    module_dir: str = "./assets/models/modules"
+    module_count: int = 7
+    module_spacing: float = 0.2
+    module_seed: int | None = None
 
     speed: float = 10.0
     jump_base: float = 7.0

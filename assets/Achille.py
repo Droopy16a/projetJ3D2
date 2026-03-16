@@ -3,7 +3,8 @@ from direct.showbase.ShowBase import ShowBase
 from direct.task import Task
 
 
-SNAP_DISTANCE = 1.1
+SNAP_DISTANCE = 1.05
+ROOM_WIDTH = 1.0
 
 
 class Room:
@@ -49,12 +50,12 @@ class Dungeon:
                 if other_room.model.get_x() < moved_room.model.get_x():
                     moved_room.left = other_room
                     other_room.right = moved_room
-                    moved_room.model.set_x(other_room.model.get_x() + 1.2)
+                    moved_room.model.set_x(other_room.model.get_x() + ROOM_WIDTH)
                     moved_room.model.set_z(other_room.model.get_z())
                 else:
                     moved_room.right = other_room
                     other_room.left = moved_room
-                    moved_room.model.set_x(other_room.model.get_x() - 1.2)
+                    moved_room.model.set_x(other_room.model.get_x() - ROOM_WIDTH)
                     moved_room.model.set_z(other_room.model.get_z())
         # création des couloirs
         if moved_room.left:
@@ -77,7 +78,7 @@ class Dungeon:
         x2 = room_right.model.get_x()
         z = room_left.model.get_z()
 
-        room_half_width = 0.5
+        room_half_width = ROOM_WIDTH * 0.5
         start_x = x1 + room_half_width
         end_x   = x2 - room_half_width
 

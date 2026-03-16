@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import os
 import random
 import time
@@ -14,8 +15,10 @@ from assets.Global_state import GLOBAL_STATE
 from assets.Mob import Mob
 from assets.PhysicsManager import PhysicsManager
 from assets.World import World
+from assets.Achille import Dungeon, Room
 
 from direct.gui.DirectGui import DirectFrame, DirectWaitBar
+from direct.gui import DirectGuiGlobals as DGG
 from direct.gui.OnscreenText import OnscreenText
 from direct.showbase.ShowBase import ShowBase
 from panda3d.core import (
@@ -78,7 +81,7 @@ MOB_DAMAGE = 12
 class Game(ShowBase):
     def __init__(self, config: Config = Config()):
         super().__init__()
-        self.config = config
+        self.game_config = config
         self.disableMouse()
 
         if simplepbr is not None:
@@ -98,7 +101,7 @@ class Game(ShowBase):
             self.render.setShaderAuto()
 
         props = WindowProperties()
-        props.setTitle(self.config.window_title)
+        props.setTitle(self.game_config.window_title)
         self.win.requestProperties(props)
 
         GLOBAL_STATE.set_camera(self)
@@ -107,10 +110,26 @@ class Game(ShowBase):
         self._setup_lighting()
         # self._setup_parallax_background()
 
-        self.physics = PhysicsManager(self.config.gravity, self.render)
-        self.world = World(self.config, self.render, self.loader, self.physics, index=1)
+        self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
+        self.ws_host = os.getenv("DUNGEON_ARISE_HOST", DEFAULT_HOST)
+        self.ws_uri = f"ws://{self.ws_host}:{self.PORT}"
+
+        if self.game_config.module_seed is None:
+            env_seed = os.getenv("DUNGEON_WORLD_SEED")
+            if env_seed is not None:
+                try:
+                    self.game_config.module_seed = int(env_seed)
+                except ValueError:
+                    self.game_config.module_seed = None
+            if self.game_config.module_seed is None:
+                seed_src = f"{self.ws_host}:{self.PORT}"
+                self.game_config.module_seed = int(hashlib.sha256(seed_src.encode()).hexdigest()[:8], 16)
+
+        self.physics = PhysicsManager(self.game_config.gravity, self.render)
+        self.world = World(self.game_config, self.render, self.loader, self.physics, index=0)
         self.min_x, self.max_x = self.world.setLimit()
         self.goal_x = self.max_x - 2.0
+        self._setup_boss_editor()
 
         self.player_id: int | None = None
         self.hero: Character | None = None
@@ -139,9 +158,6 @@ class Game(ShowBase):
         self.hitstop_remaining = 0.0
         self.camera_follow_x = self.camera.getX()
 
-        self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
-        self.ws_host = os.getenv("DUNGEON_ARISE_HOST", DEFAULT_HOST)
-        self.ws_uri = f"ws://{self.ws_host}:{self.PORT}"
         self.websocket = None
         self._event_loop = None
         self._connection_established = False
@@ -153,6 +169,7 @@ class Game(ShowBase):
         self.active_vfx: list[dict[str, Any]] = []
         self.active_flashes: list[dict[str, Any]] = []
         self.status_timer = 0.0
+        self._last_world_layout_sig: str | None = None
 
         self._setup_hud()
 
@@ -162,11 +179,14 @@ class Game(ShowBase):
             self.accept(str(slot), self.select_control_slot, [slot])
         self.accept("b", self.select_control_boss)
         self.accept("0", self.select_control_boss)
-        self.accept("mouse1", self.on_attack_input)
+        self._ui_consumed_click = False
+        self.accept("mouse1", self._on_mouse1)
+        self.accept("mouse1-up", self._on_mouse1_up)
 
         self.taskMgr.add(self._task_physics, "physics_task")
         self.taskMgr.add(self._task_update, "update_task")
         self.taskMgr.add(self._task_websocket, "websocket_task")
+        self.taskMgr.add(self._task_boss_editor_drag, "boss_editor_drag")
 
     def _setup_lighting(self):
         self.render.clearLight()
@@ -267,6 +287,348 @@ class Game(ShowBase):
                 base_pos.y,
                 base_pos.z + cam_z * factor_z,
             )
+
+    def _setup_boss_editor(self):
+        self.editor_enabled = bool(getattr(self.world, "module_nodes", []))
+        self.editor_frame = (0, 0.68, -0.95, 0.95)
+        self.editor_root = DirectFrame(
+            parent=self.aspect2d,
+            frameColor=(0.02, 0.03, 0.04, 0.55),
+            frameSize=self.editor_frame,
+            pos=(0.64, 0, 0),
+        )
+        self.editor_root.setTransparency(TransparencyAttrib.MAlpha)
+        self.editor_root.hide()
+        self.editor_expanded = False
+        self.editor_root.bind(DGG.B1PRESS, self._on_editor_panel_press)
+
+        self.editor_tab_frame = (-0.06, 0.06, -0.12, 0.12)
+        self.editor_tab = DirectFrame(
+            parent=self.aspect2d,
+            frameColor=(0.02, 0.03, 0.04, 0.7),
+            frameSize=self.editor_tab_frame,
+            pos=(1.23, 0, 0),
+        )
+        self.editor_tab.setTransparency(TransparencyAttrib.MAlpha)
+        self.editor_tab.hide()
+        self.editor_tab.bind(DGG.B1PRESS, self._on_editor_tab_press)
+        self.editor_tab_label = OnscreenText(
+            text="<",
+            pos=(0, -0.04),
+            align=TextNode.ACenter,
+            scale=0.07,
+            fg=(0.95, 0.95, 0.95, 0.9),
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.editor_tab,
+        )
+
+        self.editor_title = OnscreenText(
+            text="BOSS EDITOR",
+            pos=(0.34, 0.86),
+            align=TextNode.ACenter,
+            scale=0.045,
+            fg=(0.95, 0.95, 0.95, 0.9),
+            shadow=(0, 0, 0, 0.8),
+            mayChange=False,
+            parent=self.editor_root,
+        )
+
+        self.editor_canvas = self.editor_root.attachNewNode("editor_canvas")
+        self.editor_scale = 0.12
+        self.editor_canvas.setScale(self.editor_scale, 1, self.editor_scale)
+        self.editor_canvas.setPos(0.08, 0, 0.35)
+
+        self.editor_dungeon = Dungeon()
+        self.editor_room_to_module: dict[Room, dict] = {}
+        self.editor_dragged_room: Room | None = None
+        self.editor_drag_offset = Vec3(0, 0, 0)
+        self.editor_room_half_w = 0.5
+        self.editor_room_half_h = 0.25
+
+        if not self.editor_enabled:
+            self.editor_notice = OnscreenText(
+                text="No modules found.",
+                pos=(0.34, 0.7),
+                align=TextNode.ACenter,
+                scale=0.04,
+                fg=(0.9, 0.7, 0.7, 0.9),
+                shadow=(0, 0, 0, 0.8),
+                mayChange=False,
+                parent=self.editor_root,
+            )
+            return
+
+        colors = [
+            (0.75, 0.45, 0.35, 1),
+            (0.35, 0.55, 0.8, 1),
+            (0.4, 0.7, 0.4, 1),
+            (0.65, 0.55, 0.85, 1),
+        ]
+
+        card_maker = CardMaker("module_card")
+        card_maker.set_frame(-0.5, 0.5, -0.25, 0.25)
+
+        modules = list(zip(self.world.module_nodes, self.world.module_meta))
+        total_width = (len(modules) - 1) * 1.0
+        start_x = -total_width / 2 if modules else 0.0
+
+        for i, (module, meta) in enumerate(modules):
+            room_name = meta.get("name", f"Module {i + 1}")
+            room = Room(room_name, colors[i % len(colors)])
+            room.model = self.editor_canvas.attachNewNode(card_maker.generate())
+            room.model.setColor(*room.color)
+            room.model.setPos(start_x + i * 1.0, 0, 0.0)
+            self.editor_dungeon.add_room(room)
+            self.editor_room_to_module[room] = {"node": module, "meta": meta}
+
+        for room in self.editor_dungeon.rooms:
+            self.editor_dungeon.link_rooms(room, self.editor_canvas)
+
+        self._fit_editor_canvas()
+        self._compute_editor_world_mapping()
+        self._sync_world_from_editor()
+
+    def _compute_editor_world_mapping(self):
+        modules = list(self.editor_room_to_module.values())
+        if not modules:
+            self.editor_unit_to_world = 1.0
+            self.editor_world_origin = 0.0
+            return
+
+        world_centers = []
+        editor_centers = []
+        for room in self.editor_dungeon.rooms:
+            mapping = self.editor_room_to_module.get(room)
+            if not mapping:
+                continue
+            meta = mapping["meta"]
+            node = mapping["node"]
+            world_centers.append(node.getX() + meta["center_offset"])
+            editor_centers.append(room.model.getX())
+
+        if len(world_centers) > 1:
+            world_centers_sorted = sorted(world_centers)
+            editor_centers_sorted = sorted(editor_centers)
+            world_spacing = sum(
+                world_centers_sorted[i + 1] - world_centers_sorted[i]
+                for i in range(len(world_centers_sorted) - 1)
+            ) / (len(world_centers_sorted) - 1)
+            editor_spacing = sum(
+                editor_centers_sorted[i + 1] - editor_centers_sorted[i]
+                for i in range(len(editor_centers_sorted) - 1)
+            ) / (len(editor_centers_sorted) - 1)
+            self.editor_unit_to_world = world_spacing / editor_spacing if editor_spacing else 1.0
+        else:
+            self.editor_unit_to_world = 1.0
+
+        self.editor_world_origin = world_centers[0] - editor_centers[0] * self.editor_unit_to_world
+
+    def _fit_editor_canvas(self):
+        if not self.editor_dungeon.rooms:
+            return
+        min_x = min(room.model.getX() - self.editor_room_half_w for room in self.editor_dungeon.rooms)
+        max_x = max(room.model.getX() + self.editor_room_half_w for room in self.editor_dungeon.rooms)
+        min_z = min(room.model.getZ() - self.editor_room_half_h for room in self.editor_dungeon.rooms)
+        max_z = max(room.model.getZ() + self.editor_room_half_h for room in self.editor_dungeon.rooms)
+
+        content_w = max(0.01, max_x - min_x)
+        content_h = max(0.01, max_z - min_z)
+        content_cx = (min_x + max_x) * 0.5
+        content_cz = (min_z + max_z) * 0.5
+
+        left, right, bottom, top = self.editor_frame
+        margin_x = 0.12
+        margin_y = 0.3
+        available_w = max(0.01, (right - left) - margin_x * 2)
+        available_h = max(0.01, (top - bottom) - margin_y * 2)
+
+        scale = min(available_w / content_w, available_h / content_h) * 0.92
+        self.editor_scale = scale
+        self.editor_canvas.setScale(scale, 1, scale)
+
+        target_x = left + margin_x + available_w * 0.5 - content_cx * scale
+        target_z = bottom + margin_y + available_h * 0.5 - content_cz * scale
+        self.editor_canvas.setPos(target_x, 0, target_z)
+
+    def _get_editor_mouse_pos(self) -> Vec3 | None:
+        if not self.mouseWatcherNode.hasMouse():
+            return None
+        mx = self.mouseWatcherNode.getMouseX()
+        my = self.mouseWatcherNode.getMouseY()
+        aspect = self.getAspectRatio()
+        ax = mx * aspect
+        az = my
+
+        root_pos = self.editor_root.getPos(self.aspect2d)
+        canvas_pos = self.editor_canvas.getPos(self.editor_root)
+        local_x = (ax - root_pos.x - canvas_pos.x) / self.editor_scale
+        local_z = (az - root_pos.z - canvas_pos.z) / self.editor_scale
+        return Vec3(local_x, 0, local_z)
+
+    def _boss_editor_handle_click(self) -> bool:
+        if (
+            not self.editor_enabled
+            or self.player_id != 1
+            or self.editor_root.isHidden()
+            or not self.editor_expanded
+        ):
+            return False
+        pos = self._get_editor_mouse_pos()
+        if pos is None:
+            return False
+        for room in self.editor_dungeon.rooms:
+            rx = room.model.getX()
+            rz = room.model.getZ()
+            if abs(pos.x - rx) <= self.editor_room_half_w and abs(pos.z - rz) <= self.editor_room_half_h:
+                self.editor_dragged_room = room
+                self.editor_drag_offset = room.model.getPos() - pos
+                return True
+        return False
+
+    def _on_editor_panel_press(self, _event=None):
+        if self.player_id != 1 or not self.editor_enabled or not self.editor_expanded:
+            return
+        self._ui_consumed_click = True
+        self._boss_editor_handle_click()
+
+    def _on_editor_tab_press(self, _event=None):
+        if self.player_id != 1 or not self.editor_enabled:
+            return
+        self._ui_consumed_click = True
+        self.editor_expanded = not self.editor_expanded
+
+    def _is_mouse_over_editor(self) -> bool:
+        if not self.editor_enabled or self.editor_root.isHidden() or not self.editor_expanded:
+            return False
+        if not self.mouseWatcherNode.hasMouse():
+            return False
+        mx = self.mouseWatcherNode.getMouseX()
+        my = self.mouseWatcherNode.getMouseY()
+        aspect = self.getAspectRatio()
+        ax = mx * aspect
+        az = my
+        root_pos = self.editor_root.getPos(self.aspect2d)
+        local_x = ax - root_pos.x
+        local_z = az - root_pos.z
+        left, right, bottom, top = self.editor_frame
+        return left <= local_x <= right and bottom <= local_z <= top
+
+    def _is_mouse_over_tab(self) -> bool:
+        if not self.editor_enabled or self.editor_tab.isHidden():
+            return False
+        if not self.mouseWatcherNode.hasMouse():
+            return False
+        mx = self.mouseWatcherNode.getMouseX()
+        my = self.mouseWatcherNode.getMouseY()
+        aspect = self.getAspectRatio()
+        ax = mx * aspect
+        az = my
+        tab_pos = self.editor_tab.getPos(self.aspect2d)
+        local_x = ax - tab_pos.x
+        local_z = az - tab_pos.z
+        left, right, bottom, top = self.editor_tab_frame
+        return left <= local_x <= right and bottom <= local_z <= top
+
+    def _boss_editor_release(self):
+        if not self.editor_dragged_room:
+            return
+        self.editor_dungeon.link_rooms(self.editor_dragged_room, self.editor_canvas)
+        if self._editor_has_links():
+            self._sync_world_from_editor()
+        else:
+            self._set_status("Link rooms with corridors to apply changes.")
+        self.editor_dragged_room = None
+
+    def _editor_has_links(self) -> bool:
+        if not self.editor_dungeon.rooms:
+            return False
+        return all(room.corridor_left or room.corridor_right for room in self.editor_dungeon.rooms)
+
+    def _sync_world_from_editor(self):
+        if not self.editor_enabled:
+            return
+        levels = self._compute_editor_levels()
+        ordered_rooms = sorted(self.editor_dungeon.rooms, key=lambda r: r.model.getX())
+        current_x = 0.0
+        for room in ordered_rooms:
+            mapping = self.editor_room_to_module.get(room)
+            if not mapping:
+                continue
+            node = mapping["node"]
+            meta = mapping["meta"]
+            min_bound = meta.get("min_bound")
+            width = float(meta.get("width", 1.0))
+            if min_bound is None:
+                min_bound = Vec3(0, 0, 0)
+
+            node.setX(current_x - float(min_bound.x))
+            level_offset = levels.get(room, 0.0)
+            node.setZ(meta["base_z"] + level_offset)
+            current_x += width
+        self.world.recompute_bounds()
+        self.min_x, self.max_x = self.world.setLimit()
+        self.goal_x = self.max_x - 2.0
+
+    def _compute_editor_levels(self) -> dict[Room, float]:
+        rooms = list(self.editor_dungeon.rooms)
+        if not rooms:
+            return {}
+        rooms.sort(key=lambda r: r.model.getX())
+
+        levels: dict[Room, float] = {}
+        current_level = 0.0
+        levels[rooms[0]] = current_level
+
+        for i in range(1, len(rooms)):
+            room = rooms[i]
+            prev = rooms[i - 1] if i > 0 else None
+            meta = self.editor_room_to_module.get(room, {}).get("meta", {})
+            prev = self.editor_room_to_module.get(prev, {}).get("meta", {})
+            delta = self._module_level_delta(meta, prev)
+            current_level += delta
+            levels[room] = current_level
+
+        return levels
+
+    def _module_level_delta(self, meta: dict, prev = None) -> float:
+        name = str(meta.get("name", "")).lower()
+        path = str(meta.get("path", "")).lower()
+        key = name or path
+        prev = str(prev.get("name", "")).lower() or str(prev.get("name", "")).lower()
+        if "stair" in key and prev and "stair" in prev and prev.replace("stair", "") != key.replace("stair", ""):
+            return 0.0
+        if "base" in key:
+            return 0.0
+        if "stair_u" in key:
+            return 8.0
+        if "stair_d" in key:
+            return -8.0
+        return 0.0
+
+    def _on_mouse1(self):
+        if self._ui_consumed_click:
+            self._ui_consumed_click = False
+            return
+        if self.player_id == 1 and self.editor_enabled and self._is_mouse_over_tab():
+            self.editor_expanded = not self.editor_expanded
+            return
+        if self.player_id == 1 and self._is_mouse_over_editor():
+            if self._boss_editor_handle_click():
+                return
+            return
+        self.on_attack_input()
+
+    def _on_mouse1_up(self):
+        if self.player_id == 1 and self.editor_enabled:
+            self._boss_editor_release()
+
+    def _task_boss_editor_drag(self, task):
+        if self.editor_dragged_room and self.player_id == 1:
+            pos = self._get_editor_mouse_pos()
+            if pos is not None:
+                self.editor_dragged_room.model.setPos(pos + self.editor_drag_offset)
+        return task.cont
 
     def _setup_hud(self):
         panel_color = (0.05, 0.07, 0.1, 0.65)
@@ -665,13 +1027,26 @@ class Game(ShowBase):
             self.left_panel.hide()
             self.right_panel.hide()
             self.action_panel.hide()
+            self.editor_root.hide()
+            self.editor_tab.hide()
         elif self.player_id == 1:
             role = "Boss"
             control = self._control_label(self.controlled_entity).title()
             self.hero_ui_root.hide()
             self.left_panel.show()
-            self.right_panel.show()
+            if self.editor_enabled and self.editor_expanded:
+                self.right_panel.hide()
+            else:
+                self.right_panel.show()
             self.action_panel.show()
+            if self.editor_enabled:
+                self.editor_tab.show()
+                if self.editor_expanded:
+                    self.editor_root.show()
+                    self.editor_tab_label.setText(">")
+                else:
+                    self.editor_root.hide()
+                    self.editor_tab_label.setText("<")
         else:
             role = "Connecting"
             control = "--"
@@ -679,6 +1054,8 @@ class Game(ShowBase):
             self.left_panel.show()
             self.right_panel.show()
             self.action_panel.show()
+            self.editor_root.hide()
+            self.editor_tab.hide()
 
         self.role_label.setText(f"Role: {role}")
         self.control_text.setText(f"Control: {control}")
@@ -776,13 +1153,13 @@ class Game(ShowBase):
         hero_start = Vec3(self.min_x + 2.0, 0, 7)
         boss_start = Vec3(self.max_x - 5.0, 0, 7)
 
-        self.hero = Character(self.config, self.render, self.loader, self.physics, start_pos=hero_start)
+        self.hero = Character(self.game_config, self.render, self.loader, self.physics, start_pos=hero_start)
         if self.player_id == 0:
-            self.boss = Mob(self.config, self.render, self.loader, self.physics, boss_start, mode="REMOTE")
+            self.boss = Mob(self.game_config, self.render, self.loader, self.physics, boss_start, mode="REMOTE")
             self.controlled_entity = "hero"
             self._set_status("Hero ready. Reach the end to unlock the boss.")
         else:
-            self.boss = Mob(self.config, self.render, self.loader, self.physics, boss_start, mode="PLAYER")
+            self.boss = Mob(self.game_config, self.render, self.loader, self.physics, boss_start, mode="PLAYER")
             self.controlled_entity = "boss"
             self._set_status("Boss ready. F=spawn (limit/cd), TAB=cycle, 1-6=pick mob, B=boss.")
 
@@ -1029,6 +1406,32 @@ class Game(ShowBase):
         if isinstance(mobs, list):
             self._sync_remote_mobs(mobs)
 
+        world_payload = payload.get("world")
+        if isinstance(world_payload, dict):
+            self._apply_remote_world_layout(world_payload)
+
+    def _apply_remote_world_layout(self, world_payload: dict[str, Any]):
+        modules = world_payload.get("modules")
+        if not isinstance(modules, list):
+            return
+        sig = json.dumps(modules, sort_keys=True)
+        if sig == self._last_world_layout_sig:
+            return
+        self._last_world_layout_sig = sig
+
+        for item in modules:
+            if not isinstance(item, dict):
+                continue
+            idx = int(item.get("id", -1))
+            if idx < 0 or idx >= len(getattr(self.world, "module_nodes", [])):
+                continue
+            node = self.world.module_nodes[idx]
+            node.setX(float(item.get("x", node.getX())))
+            node.setZ(float(item.get("z", node.getZ())))
+        self.world.recompute_bounds()
+        self.min_x, self.max_x = self.world.setLimit()
+        self.goal_x = self.max_x - 2.0
+
     def _sync_remote_mobs(self, mobs_data: list[dict[str, Any]]):
         seen_ids: set[int] = set()
         for data in mobs_data:
@@ -1044,7 +1447,7 @@ class Game(ShowBase):
 
             if mob_id not in self.remote_mobs:
                 self.remote_mobs[mob_id] = Mob(
-                    self.config,
+                    self.game_config,
                     self.render,
                     self.loader,
                     self.physics,
@@ -1104,7 +1507,7 @@ class Game(ShowBase):
                 }
             )
 
-        return {
+        payload = {
             "type": "state",
             "boss": {
                 "x": float(self.boss.np.getX()),
@@ -1118,6 +1521,32 @@ class Game(ShowBase):
             "controlled": self.controlled_entity,
             "mobs": mobs_payload,
         }
+        if self.editor_enabled:
+            payload["world"] = self._get_world_layout_payload()
+        return payload
+
+    def _get_world_layout_payload(self) -> dict[str, Any]:
+        layout = []
+        levels = self._compute_editor_levels() if self.editor_enabled else {}
+        for idx, node in enumerate(getattr(self.world, "module_nodes", [])):
+            meta = self.world.module_meta[idx] if idx < len(self.world.module_meta) else {}
+            room = None
+            if self.editor_enabled:
+                for r, mapping in self.editor_room_to_module.items():
+                    if mapping.get("node") is node:
+                        room = r
+                        break
+            level_offset = float(levels.get(room, 0.0)) if room else 0.0
+            layout.append(
+                {
+                    "id": idx,
+                    "x": float(node.getX()),
+                    "z": float(node.getZ()),
+                    "level": level_offset,
+                    "name": meta.get("name", ""),
+                }
+            )
+        return {"modules": layout}
 
     def _unlock_boss_phase(self, announce: bool):
         if self.boss_phase_unlocked:
@@ -1434,7 +1863,7 @@ class Game(ShowBase):
         self.next_mob_id += 1
 
         mob = Mob(
-            self.config,
+            self.game_config,
             self.render,
             self.loader,
             self.physics,
@@ -1607,8 +2036,18 @@ class Game(ShowBase):
         camy = self.camera.getY()
         camz = self.camera.getZ()
         target_x = max(self.min_x, min(target_np.getX(), self.max_x))
+
+        # Soft vertical follow with dead zone (Silksong-like)
+        target_z = target_np.getZ() + 4.0
+        dead_zone = 1.6
+        if abs(target_z - camz) > dead_zone:
+            target_z = camz + (target_z - camz - math.copysign(dead_zone, target_z - camz))
+        else:
+            target_z = camz
+
         blend = min(1.0, dt * CAMERA_SMOOTHING)
         self.camera_follow_x += (target_x - self.camera_follow_x) * blend
+        camz = camz + (target_z - camz) * min(1.0, dt * (CAMERA_SMOOTHING * 0.6))
         self.camera.setPos(self.camera_follow_x, camy, camz)
 
     def _task_update(self, task):
