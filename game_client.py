@@ -165,6 +165,10 @@ class Game(ShowBase):
 
         self.accept("f", self.spawn_local_mob_request)
         self.accept("tab", self.cycle_control)
+        for slot in range(1, MAX_ACTIVE_MOBS + 1):
+            self.accept(str(slot), self.select_control_slot, [slot])
+        self.accept("b", self.select_control_boss)
+        self.accept("0", self.select_control_boss)
         self.accept("mouse1", self.on_attack_input)
 
         self.taskMgr.add(self._task_physics, "physics_task")
@@ -284,11 +288,14 @@ class Game(ShowBase):
         else:
             self.boss = Mob(self.config, self.render, self.loader, self.physics, boss_start, mode="PLAYER")
             self.controlled_entity = "boss"
-            self._set_status("Boss ready. F=spawn (limit/cd), TAB=switch control.")
+            self._set_status("Boss ready. F=spawn (limit/cd), TAB=cycle, 1-6=pick mob, B=boss.")
 
         self._update_hud()
 
     def _queue_message(self, payload: dict[str, Any]):
+        if payload.get("type") == "state":
+            # Keep only the newest state update to avoid backlog-induced latency.
+            self._outbox = [msg for msg in self._outbox if msg.get("type") != "state"]
         if len(self._outbox) > 300:
             self._outbox = self._outbox[-150:]
         self._outbox.append(payload)
@@ -731,9 +738,9 @@ class Game(ShowBase):
         for key, target in list(self.remote_targets.items()):
             smoothing = NETWORK_SMOOTHING
             prediction_limit = NETWORK_PREDICTION_LIMIT
-            if key.startswith("mob:"):
-                smoothing *= 1.6
-                prediction_limit *= 1.4
+            # if key.startswith("mob:"):
+            #     smoothing *= 1.6
+            #     prediction_limit *= 1.4
             blend = 1.0 - math.exp(-smoothing * dt)
             entity = self._resolve_remote_entity(key)
             if entity is None:
@@ -942,7 +949,9 @@ class Game(ShowBase):
         self.local_mob_hp[mob_id] = MOB_MAX_HP
         self.ai_attack_clock[mob_id] = 0.0
         self._spawn_pulse_vfx(mob.np.getPos(self.render) + Vec3(0, 0, 1.3), (0.4, 0.95, 1.0, 0.9), 0.22, 0.28)
-        self._set_status(f"Spawned mob #{mob_id}.")
+        slot = self._get_mob_slot(mob_id)
+        slot_text = f" (slot {slot})" if slot is not None else ""
+        self._set_status(f"Spawned mob #{mob_id}{slot_text}.")
 
     def _destroy_local_mob(self, mob_id: int):
         mob = self.local_mobs.get(mob_id)
@@ -970,6 +979,22 @@ class Game(ShowBase):
         for mob_id, mob in self.local_mobs.items():
             mob.set_mode("PLAYER" if mob_id == self.controlled_entity else "AI")
 
+    def _get_mob_slot(self, mob_id: int) -> int | None:
+        mob_ids = sorted(self.local_mobs.keys())
+        try:
+            return mob_ids.index(mob_id) + 1
+        except ValueError:
+            return None
+
+    def _control_label(self, entity: str | int) -> str:
+        if entity == "boss":
+            return "boss"
+        if isinstance(entity, int):
+            slot = self._get_mob_slot(entity)
+            slot_text = f" (slot {slot})" if slot is not None else ""
+            return f"mob {entity}{slot_text}"
+        return "boss"
+
     def cycle_control(self):
         if self.player_id != 1 or self.winner:
             return
@@ -985,7 +1010,27 @@ class Game(ShowBase):
 
         next_index = (current_index + 1) % len(options)
         self._set_controlled_entity(options[next_index])
-        self._set_status(f"Control: {self.controlled_entity}")
+        self._set_status(f"Control: {self._control_label(self.controlled_entity)}")
+
+    def select_control_boss(self):
+        if self.player_id != 1 or self.winner:
+            return
+        self._set_controlled_entity("boss")
+        self._set_status("Control: boss")
+
+    def select_control_slot(self, slot: int):
+        if self.player_id != 1 or self.winner:
+            return
+        mob_ids = sorted(self.local_mobs.keys())
+        if not mob_ids:
+            self._set_status("No mobs to control.")
+            return
+        if slot < 1 or slot > len(mob_ids):
+            self._set_status(f"No mob in slot {slot}.")
+            return
+        mob_id = mob_ids[slot - 1]
+        self._set_controlled_entity(mob_id)
+        self._set_status(f"Control: {self._control_label(mob_id)}")
 
     def _update_ai_attacks(self):
         if self.player_id != 1 or not self.hero or self.winner:
