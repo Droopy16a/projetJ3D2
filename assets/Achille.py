@@ -103,41 +103,62 @@ class Dungeon:
     def is_valid(self):
         if not self.rooms:
             return False
-        
-        sorted_rooms = sorted(self.rooms, key=lambda r: r.model.get_x())
+         
+        self.visited = set()
+        start_room = self.rooms[0]
+        self.dfs(start_room)
+    
+        return len(self.visited) == len(self.rooms)
+    
+    def clear_links(self):
+        for room in self.rooms:
+            room.left = None
+            room.right = None
 
-        distances = [abs(sorted_rooms[i+1].model.get_x() - sorted_rooms[i].model.get_x()) for i in range(len(sorted_rooms)-1)]
+            if room.corridor_left:
+                room.corridor_left.remove_node()
+                room.corridor_left = None
 
-        avg_distance = sum(distances) / len(distances)
-        tolerance = avg_distance * 0.4 
+            if room.corridor_right:
+                room.corridor_right.remove_node()
+                room.corridor_right = None
+    
+    def rebuild_links(self, render):
+        self.clear_links()
 
-        for i in range(len(sorted_rooms) - 1):
-            x1 = sorted_rooms[i].model.get_x()
-            x2 = sorted_rooms[i + 1].model.get_x()
-            distance = abs(x2 - x1)
+        for room in self.rooms:
+            for other in self.rooms:
+                if room == other:
+                    continue
 
-            z_diff = abs(sorted_rooms[i].model.get_z() - sorted_rooms[i + 1].model.get_z())
-            if z_diff > 0.1:
-                return False
+                dx = abs(room.model.get_x() - other.model.get_x())
+                dz = abs(room.model.get_z() - other.model.get_z())
 
-            if abs(distance - avg_distance) > tolerance or z_diff > 0.1:
-                return False
-            
-        return True
+                if dx < SNAP_DISTANCE and dz < 0.2:
+                    if other.model.get_x() < room.model.get_x():
+                        room.left = other
+                    else:
+                        room.right = other
+
+        for room in self.rooms:
+            if room.left:
+                room.corridor_left = self.create_corridor(render, room.left, room)
+            if room.right:
+                room.corridor_right = self.create_corridor(render, room, room.right)
 
 
     # dfs (Depth-First Search), on cherche à aller au bout de chaque branche en partant de l'origine, si on a visité toutes les salles, le donjon est connecté
     def dfs(self, room):
         if room in self.visited:
             return
+
         self.visited.add(room)
+
         if room.left:
             self.dfs(room.left)
+
         if room.right:
             self.dfs(room.right)
-
-        self.dfs(self.rooms[0])
-        return len(self.visited) == len(self.rooms)
 
 
 # permet les controles avec la souris pour déplacer les salles, défini les noms et couleurs des salles et les affiches
