@@ -140,7 +140,6 @@ class Mob(DirectObject.DirectObject):
         self.mode = next_mode
 
         if previous_mode == 'PLAYER' and self._controls_bound:
-            # Stop listening to player input when leaving PLAYER mode.
             self.ignoreAll()
             self._controls_bound = False
             self._reset_controls()
@@ -158,7 +157,6 @@ class Mob(DirectObject.DirectObject):
             else:
                 self.disable_physics()
         elif self.mode == 'AI':
-            # Snap facing to +/-X so AI rays and movement are aligned.
             heading = (self.np.getH() + 360.0) % 360.0
             if heading > 180.0:
                 heading -= 360.0
