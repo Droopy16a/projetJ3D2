@@ -68,7 +68,12 @@ class World:
         self.level_model.setScale(self.config["size"])
         self.level_model.setPos(self.config["pos"])
         self.level_model.setHpr(self.config["Hpr"])
-        apply_bullet_hitboxes(self.level_model, self.physics.world, ignore=self.config["ignore"])
+        apply_bullet_hitboxes(
+            self.level_model,
+            self.physics.world,
+            ignore=self.config["ignore"],
+            debug_logs=bool(getattr(self.c, "debug_hitbox_logs", False)),
+        )
 
     def _build_modular_world(self) -> bool:
         module_defs = list(self.c.levels) if getattr(self.c, "levels", None) else []
@@ -111,7 +116,12 @@ class World:
             center_offset = float((min_bound.x + max_bound.x) * 0.5)
 
             module.setPos(current_x - min_bound.x, 0, -min_bound.z)
-            apply_bullet_hitboxes(module, self.physics.world, ignore=module_def.get("ignore", []))
+            apply_bullet_hitboxes(
+                module,
+                self.physics.world,
+                ignore=module_def.get("ignore", []),
+                debug_logs=bool(getattr(self.c, "debug_hitbox_logs", False)),
+            )
 
             self.module_nodes.append(module)
             self.module_meta.append(

@@ -10,11 +10,12 @@ from panda3d.bullet import (
 )
 
 
-def apply_bullet_hitboxes(model: NodePath, bullet_world, ignore=None):
+def apply_bullet_hitboxes(model: NodePath, bullet_world, ignore=None, debug_logs: bool = False):
     if ignore is None:
         ignore = []
     for np in model.find_all_matches("**/+GeomNode"):
-        print("Processing node:", np.get_name())
+        if debug_logs:
+            print("Processing node:", np.get_name())
 
         if np.get_name() in ignore:
             continue
@@ -45,4 +46,5 @@ def apply_bullet_hitboxes(model: NodePath, bullet_world, ignore=None):
 
         bullet_world.attach(body)
 
-    print("Bullet triangle-mesh hitboxes applied")
+    if debug_logs:
+        print("Bullet triangle-mesh hitboxes applied")
