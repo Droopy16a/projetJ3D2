@@ -12,7 +12,9 @@ class Config:
     cube_mass: float = 200.0
     boss_mass: float = 200.0
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
-    debug_physics: bool = True
+    debug_physics: bool = False
+    debug_rays: bool = False
+    debug_hitbox_logs: bool = False
     use_modular_world: bool = True
     module_dir: str = "./assets/models/modules"
     module_count: int = 7
@@ -24,7 +26,7 @@ class Config:
     jump_charge_max: float = 10.0
     jump_charge_rate: float = 0.1
 
-    player_model: str = "./assets/models/persoepe.glb"
+    player_model: str = "./assets/models/persoepenoir.glb"
     mob_model: str = "./assets/models/mobAT_copy.glb"
     mob_visual_scale: float = 1.0
     mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)

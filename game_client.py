@@ -7,6 +7,7 @@ import os
 import random
 import time
 import math
+from collections import deque
 from typing import Any
 
 from assets.Character import Character
@@ -76,6 +77,7 @@ MOB_MAX_HP = 65
 HERO_DAMAGE = 22
 BOSS_DAMAGE = 18
 MOB_DAMAGE = 12
+HUD_UPDATE_INTERVAL = 0.05
 
 
 class Game(ShowBase):
@@ -162,16 +164,21 @@ class Game(ShowBase):
         self._event_loop = None
         self._connection_established = False
         self._ws_task = None
-        self._outbox: list[dict[str, Any]] = []
+        self._outbox: deque[dict[str, Any]] = deque()
+        self._pending_state_payload: dict[str, Any] | None = None
         self.network_update_interval = NETWORK_UPDATE_INTERVAL
         self.time_since_last_send = 0.0
+        self._hud_time_accumulator = HUD_UPDATE_INTERVAL
         self.remote_targets: dict[str, dict[str, Any]] = {}
         self.active_vfx: list[dict[str, Any]] = []
         self.active_flashes: list[dict[str, Any]] = []
         self.status_timer = 0.0
-        self._last_world_layout_sig: str | None = None
+        self._last_world_layout_sig: tuple[tuple[int, float, float], ...] | None = None
 
         self._setup_hud()
+        self._ui_cache: dict[str, Any] = {}
+        self._ui_visible: dict[str, bool] = {}
+        self._pulse_model_template = self.loader.loadModel("models/misc/sphere")
 
         self.accept("f", self.spawn_local_mob_request)
         self.accept("tab", self.cycle_control)
@@ -341,6 +348,7 @@ class Game(ShowBase):
 
         self.editor_dungeon = Dungeon()
         self.editor_room_to_module: dict[Room, dict] = {}
+        self.editor_module_to_room: dict[int, Room] = {}
         self.editor_dragged_room: Room | None = None
         self.editor_drag_offset = Vec3(0, 0, 0)
         self.editor_room_half_w = 0.5
@@ -381,6 +389,7 @@ class Game(ShowBase):
             room.model.setPos(start_x + i * 1.0, 0, 0.0)
             self.editor_dungeon.add_room(room)
             self.editor_room_to_module[room] = {"node": module, "meta": meta}
+            self.editor_module_to_room[id(module)] = room
 
         for room in self.editor_dungeon.rooms:
             self.editor_dungeon.link_rooms(room, self.editor_canvas)
@@ -1018,133 +1027,167 @@ class Game(ShowBase):
             self.status_panel.setAlphaScale(0.9 * alpha)
             self.status_text.setAlphaScale(alpha)
 
+    def _set_visible(self, key: str, widget, visible: bool):
+        previous = self._ui_visible.get(key)
+        if previous is visible:
+            return
+        if visible:
+            widget.show()
+        else:
+            widget.hide()
+        self._ui_visible[key] = visible
+
+    def _set_text_if_changed(self, key: str, widget, text: str):
+        if self._ui_cache.get(key) == text:
+            return
+        widget.setText(text)
+        self._ui_cache[key] = text
+
+    def _set_widget_number_if_changed(
+        self,
+        key: str,
+        widget,
+        prop: str,
+        value: float,
+        tolerance: float = 1e-4,
+    ):
+        prev = self._ui_cache.get(key)
+        if prev is not None and abs(float(prev) - float(value)) <= tolerance:
+            return
+        widget[prop] = value
+        self._ui_cache[key] = float(value)
+
     def _update_hud(self):
         now = time.monotonic()
-        if self.player_id == 0:
+        is_hero = self.player_id == 0
+        is_boss = self.player_id == 1
+
+        if is_hero:
             role = "Hero"
             control = "Hero"
-            self.hero_ui_root.show()
-            self.left_panel.hide()
-            self.right_panel.hide()
-            self.action_panel.hide()
-            self.editor_root.hide()
-            self.editor_tab.hide()
-        elif self.player_id == 1:
+        elif is_boss:
             role = "Boss"
             control = self._control_label(self.controlled_entity).title()
-            self.hero_ui_root.hide()
-            self.left_panel.show()
-            if self.editor_enabled and self.editor_expanded:
-                self.right_panel.hide()
-            else:
-                self.right_panel.show()
-            self.action_panel.show()
-            if self.editor_enabled:
-                self.editor_tab.show()
-                if self.editor_expanded:
-                    self.editor_root.show()
-                    self.editor_tab_label.setText(">")
-                else:
-                    self.editor_root.hide()
-                    self.editor_tab_label.setText("<")
         else:
             role = "Connecting"
             control = "--"
-            self.hero_ui_root.hide()
-            self.left_panel.show()
-            self.right_panel.show()
-            self.action_panel.show()
-            self.editor_root.hide()
-            self.editor_tab.hide()
 
-        self.role_label.setText(f"Role: {role}")
-        self.control_text.setText(f"Control: {control}")
+        right_hidden_for_editor = is_boss and self.editor_enabled and self.editor_expanded
+        show_editor_tab = is_boss and self.editor_enabled
+        show_editor_root = show_editor_tab and self.editor_expanded
+
+        self._set_visible("hero_ui_root", self.hero_ui_root, is_hero)
+        self._set_visible("left_panel", self.left_panel, not is_hero)
+        self._set_visible("right_panel", self.right_panel, (not is_hero) and (not right_hidden_for_editor))
+        self._set_visible("action_panel", self.action_panel, not is_hero)
+        self._set_visible("editor_root", self.editor_root, show_editor_root)
+        self._set_visible("editor_tab", self.editor_tab, show_editor_tab)
+        if show_editor_tab:
+            self._set_text_if_changed(
+                "editor_tab_label",
+                self.editor_tab_label,
+                ">" if self.editor_expanded else "<",
+            )
+
+        self._set_text_if_changed("role_label", self.role_label, f"Role: {role}")
+        self._set_text_if_changed("control_text", self.control_text, f"Control: {control}")
 
         if self.winner:
-            self.objective_label.setText("Game over.")
-        elif self.player_id == 0:
+            objective = "Game over."
+        elif is_hero:
             if self.boss_phase_unlocked:
-                self.objective_label.setText("Objective: defeat the boss.")
+                objective = "Objective: defeat the boss."
             else:
-                self.objective_label.setText(f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss.")
-        elif self.player_id == 1:
-            self.objective_label.setText("Objective: kill the hero before they kill you.")
+                objective = f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss."
+        elif is_boss:
+            objective = "Objective: kill the hero before they kill you."
         else:
-            self.objective_label.setText("Waiting for role assignment.")
+            objective = "Waiting for role assignment."
+        self._set_text_if_changed("objective_label", self.objective_label, objective)
 
         if self.winner:
-            self.phase_label.setText(f"{self.winner.title()} wins!")
+            phase_text = f"{self.winner.title()} wins!"
         elif self.boss_phase_unlocked:
-            self.phase_label.setText("Phase 2: boss vulnerable")
+            phase_text = "Phase 2: boss vulnerable"
         else:
-            self.phase_label.setText("")
+            phase_text = ""
+        self._set_text_if_changed("phase_label", self.phase_label, phase_text)
 
-        if self.player_id == 0:
-            if self.winner:
-                self.hero_objective_text.setText("Game over.")
-            elif self.boss_phase_unlocked:
-                self.hero_objective_text.setText("Objective: defeat the boss.")
-            else:
-                self.hero_objective_text.setText(
-                    f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss."
-                )
+        if is_hero:
+            self._set_text_if_changed("hero_objective_text", self.hero_objective_text, objective)
 
         hero_hp = max(0, min(self.hero_hp, HERO_MAX_HP))
         boss_hp = max(0, min(self.boss_hp, BOSS_MAX_HP))
-        self.hero_bar["range"] = HERO_MAX_HP
-        self.hero_bar["value"] = hero_hp
-        self.hero_hp_text.setText(f"{hero_hp}/{HERO_MAX_HP}")
-        self.boss_bar["range"] = BOSS_MAX_HP
-        self.boss_bar["value"] = boss_hp
-        self.boss_hp_text.setText(f"{boss_hp}/{BOSS_MAX_HP}")
+        self._set_widget_number_if_changed("hero_bar_range", self.hero_bar, "range", HERO_MAX_HP)
+        self._set_widget_number_if_changed("hero_bar_value", self.hero_bar, "value", hero_hp)
+        self._set_text_if_changed("hero_hp_text", self.hero_hp_text, f"{hero_hp}/{HERO_MAX_HP}")
+        self._set_widget_number_if_changed("boss_bar_range", self.boss_bar, "range", BOSS_MAX_HP)
+        self._set_widget_number_if_changed("boss_bar_value", self.boss_bar, "value", boss_hp)
+        self._set_text_if_changed("boss_hp_text", self.boss_hp_text, f"{boss_hp}/{BOSS_MAX_HP}")
 
-        mob_count = len(self.local_mobs) if self.player_id == 1 else len(self.remote_mobs)
-        self.mob_count_text.setText(f"Mobs: {mob_count}/{MAX_ACTIVE_MOBS}")
+        mob_count = len(self.local_mobs) if is_boss else len(self.remote_mobs)
+        self._set_text_if_changed("mob_count_text", self.mob_count_text, f"Mobs: {mob_count}/{MAX_ACTIVE_MOBS}")
 
         attack_cd = self._get_current_attack_cooldown()
         cd_key = self._get_attack_cooldown_key()
-        attack_left = max(0.0, attack_cd - (time.monotonic() - self.last_attack_times[cd_key]))
+        attack_left = max(0.0, attack_cd - (now - self.last_attack_times[cd_key]))
         combo_step = self.combo_state[cd_key]["step"] + 1 if self.combo_state[cd_key]["step"] >= 0 else 0
-        self.combo_text.setText(f"Combo {combo_step}")
+        self._set_text_if_changed("combo_text", self.combo_text, f"Combo {combo_step}")
 
-        self.attack_bar["range"] = max(0.001, attack_cd)
-        self.attack_bar["value"] = max(0.0, attack_cd - attack_left)
+        self._set_widget_number_if_changed("attack_bar_range", self.attack_bar, "range", max(0.001, attack_cd))
+        self._set_widget_number_if_changed("attack_bar_value", self.attack_bar, "value", max(0.0, attack_cd - attack_left))
         if attack_left <= 0.001:
-            self.attack_text.setText("Attack Ready")
+            self._set_text_if_changed("attack_text", self.attack_text, "Attack Ready")
         else:
-            self.attack_text.setText(f"Attack {attack_left:.2f}s")
+            self._set_text_if_changed("attack_text", self.attack_text, f"Attack {attack_left:.2f}s")
 
-        if self.player_id == 1:
-            spawn_left = max(0.0, SPAWN_COOLDOWN - (time.monotonic() - self.last_spawn_time))
-            self.spawn_bar.show()
-            self.spawn_text.show()
-            self.spawn_bar["range"] = SPAWN_COOLDOWN
-            self.spawn_bar["value"] = max(0.0, SPAWN_COOLDOWN - spawn_left)
+        if is_boss:
+            spawn_left = max(0.0, SPAWN_COOLDOWN - (now - self.last_spawn_time))
+            self._set_visible("spawn_bar", self.spawn_bar, True)
+            self._set_visible("spawn_text", self.spawn_text, True)
+            self._set_widget_number_if_changed("spawn_bar_range", self.spawn_bar, "range", SPAWN_COOLDOWN)
+            self._set_widget_number_if_changed(
+                "spawn_bar_value",
+                self.spawn_bar,
+                "value",
+                max(0.0, SPAWN_COOLDOWN - spawn_left),
+            )
             if spawn_left <= 0.001:
-                self.spawn_text.setText(f"Spawn Ready ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})")
+                self._set_text_if_changed(
+                    "spawn_text",
+                    self.spawn_text,
+                    f"Spawn Ready ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})",
+                )
             else:
-                self.spawn_text.setText(
-                    f"Spawn {spawn_left:.2f}s ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})"
+                self._set_text_if_changed(
+                    "spawn_text",
+                    self.spawn_text,
+                    f"Spawn {spawn_left:.2f}s ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})",
                 )
         else:
-            self.spawn_bar.hide()
-            self.spawn_text.hide()
+            self._set_visible("spawn_bar", self.spawn_bar, False)
+            self._set_visible("spawn_text", self.spawn_text, False)
 
-        if self.player_id == 0:
+        if is_hero:
             pv_ratio = 0.0 if HERO_MAX_HP <= 0 else hero_hp / HERO_MAX_HP
-            self.hero_pv_bar["value"] = max(0.0, min(1.0, pv_ratio))
+            self._set_widget_number_if_changed("hero_pv_value", self.hero_pv_bar, "value", max(0.0, min(1.0, pv_ratio)))
 
             pm_ratio = 1.0
             if attack_cd > 0.0:
                 pm_ratio = 1.0 - (attack_left / attack_cd)
-            self.hero_pm_bar["value"] = max(0.0, min(1.0, pm_ratio))
+            self._set_widget_number_if_changed("hero_pm_value", self.hero_pm_bar, "value", max(0.0, min(1.0, pm_ratio)))
 
             end_ratio = 1.0
             state = self.combo_state.get(self._get_attack_cooldown_key(), {"step": -1, "last_time": 0.0})
             if state.get("step", -1) >= 0:
                 elapsed = max(0.0, now - float(state.get("last_time", now)))
                 end_ratio = max(0.0, 1.0 - (elapsed / COMBO_WINDOW))
-            self.hero_endurance_bar["value"] = max(0.0, min(1.0, end_ratio))
+            self._set_widget_number_if_changed(
+                "hero_endurance_value",
+                self.hero_endurance_bar,
+                "value",
+                max(0.0, min(1.0, end_ratio)),
+            )
 
     def _init_entities_for_role(self):
         if self.hero or self.boss:
@@ -1167,10 +1210,12 @@ class Game(ShowBase):
 
     def _queue_message(self, payload: dict[str, Any]):
         if payload.get("type") == "state":
-            # Keep only the newest state update to avoid backlog-induced latency.
-            self._outbox = [msg for msg in self._outbox if msg.get("type") != "state"]
+            # Keep only the freshest state update to avoid latency from stale snapshots.
+            self._pending_state_payload = payload
+            return
         if len(self._outbox) > 300:
-            self._outbox = self._outbox[-150:]
+            while len(self._outbox) > 150:
+                self._outbox.popleft()
         self._outbox.append(payload)
 
     def _get_attack_cooldown_key(self) -> str:
@@ -1276,8 +1321,12 @@ class Game(ShowBase):
         if not self.websocket or not self._connection_established:
             return
         while self._outbox:
-            payload = self._outbox.pop(0)
-            await self.websocket.send(json.dumps(payload))
+            payload = self._outbox.popleft()
+            await self.websocket.send(json.dumps(payload, separators=(",", ":")))
+        if self._pending_state_payload is not None:
+            payload = self._pending_state_payload
+            self._pending_state_payload = None
+            await self.websocket.send(json.dumps(payload, separators=(",", ":")))
 
     async def websocket_handler(self):
         while True:
@@ -1303,7 +1352,7 @@ class Game(ShowBase):
                 self.websocket = None
                 self._set_status("Disconnected. Reconnecting...")
                 await asyncio.sleep(1.5)
-            except Exception as exc:  # keep retry loop alive on protocol or runtime errors
+            except Exception as exc:
                 self._connection_established = False
                 self.websocket = None
                 self._set_status("Network error. Reconnecting...")
@@ -1414,7 +1463,18 @@ class Game(ShowBase):
         modules = world_payload.get("modules")
         if not isinstance(modules, list):
             return
-        sig = json.dumps(modules, sort_keys=True)
+        sig_items: list[tuple[int, float, float]] = []
+        for item in modules:
+            if not isinstance(item, dict):
+                continue
+            try:
+                idx = int(item.get("id", -1))
+                x = round(float(item.get("x", 0.0)), 3)
+                z = round(float(item.get("z", 0.0)), 3)
+            except (TypeError, ValueError):
+                continue
+            sig_items.append((idx, x, z))
+        sig = tuple(sig_items)
         if sig == self._last_world_layout_sig:
             return
         self._last_world_layout_sig = sig
@@ -1530,12 +1590,7 @@ class Game(ShowBase):
         levels = self._compute_editor_levels() if self.editor_enabled else {}
         for idx, node in enumerate(getattr(self.world, "module_nodes", [])):
             meta = self.world.module_meta[idx] if idx < len(self.world.module_meta) else {}
-            room = None
-            if self.editor_enabled:
-                for r, mapping in self.editor_room_to_module.items():
-                    if mapping.get("node") is node:
-                        room = r
-                        break
+            room = self.editor_module_to_room.get(id(node)) if self.editor_enabled else None
             level_offset = float(levels.get(room, 0.0)) if room else 0.0
             layout.append(
                 {
@@ -1573,12 +1628,11 @@ class Game(ShowBase):
         return (dx * dx + dz * dz) ** 0.5
 
     def _spawn_pulse_vfx(self, pos: Vec3, color: tuple[float, float, float, float], base_scale: float, duration: float):
-        pulse = self.loader.loadModel("models/misc/sphere")
-        pulse.reparentTo(self.render)
+        pulse = self._pulse_model_template.copyTo(self.render)
         pulse.setPos(pos)
         pulse.setScale(base_scale)
         pulse.setColor(*color)
-        pulse.setTransparency(True)
+        pulse.setTransparency(TransparencyAttrib.MAlpha)
         self.active_vfx.append(
             {
                 "kind": "pulse",
@@ -1630,10 +1684,10 @@ class Game(ShowBase):
         self.shake_camera(0.2, 0.12)
 
     def _update_vfx(self, dt: float):
-        for fx in list(self.active_vfx):
+        next_vfx: list[dict[str, Any]] = []
+        for fx in self.active_vfx:
             node = fx["np"]
             if node.isEmpty():
-                self.active_vfx.remove(fx)
                 continue
 
             fx["age"] += dt
@@ -1648,15 +1702,20 @@ class Game(ShowBase):
 
             if t >= 1.0:
                 node.removeNode()
-                self.active_vfx.remove(fx)
+                continue
+            next_vfx.append(fx)
+        self.active_vfx = next_vfx
 
-        for flash in list(self.active_flashes):
+        next_flashes: list[dict[str, Any]] = []
+        for flash in self.active_flashes:
             node = flash["np"]
             flash["time_left"] -= dt
             if flash["time_left"] <= 0.0:
                 if node is not None and not node.isEmpty():
                     node.clearColorScale()
-                self.active_flashes.remove(flash)
+                continue
+            next_flashes.append(flash)
+        self.active_flashes = next_flashes
 
     def _update_remote_motion(self, dt: float):
         now = time.monotonic()
@@ -2037,7 +2096,6 @@ class Game(ShowBase):
         camz = self.camera.getZ()
         target_x = max(self.min_x, min(target_np.getX(), self.max_x))
 
-        # Soft vertical follow with dead zone (Silksong-like)
         target_z = target_np.getZ() + 4.0
         dead_zone = 1.6
         if abs(target_z - camz) > dead_zone:
@@ -2050,6 +2108,17 @@ class Game(ShowBase):
         camz = camz + (target_z - camz) * min(1.0, dt * (CAMERA_SMOOTHING * 0.6))
         self.camera.setPos(self.camera_follow_x, camy, camz)
 
+    def _tick_hud(self, dt: float, force: bool = False):
+        if force:
+            self._hud_time_accumulator = 0.0
+            self._update_hud()
+            return
+        self._hud_time_accumulator += dt
+        if self._hud_time_accumulator < HUD_UPDATE_INTERVAL:
+            return
+        self._hud_time_accumulator = 0.0
+        self._update_hud()
+
     def _task_update(self, task):
         dt = globalClock.getDt()
         self._process_attack_buffer()
@@ -2059,7 +2128,7 @@ class Game(ShowBase):
             self._update_vfx(dt)
             self._update_parallax(dt)
             self._update_status(dt)
-            self._update_hud()
+            self._tick_hud(dt)
             return task.cont
 
         if self.hero:
@@ -2084,7 +2153,7 @@ class Game(ShowBase):
         self._update_camera_follow(dt)
         self._update_parallax(dt)
         self._update_status(dt)
-        self._update_hud()
+        self._tick_hud(dt)
         return task.cont
 
 
