@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Optional, Dict
-import math
 
 from panda3d.core import (
     Vec3,
@@ -17,7 +16,6 @@ from direct.interval.IntervalGlobal import Sequence, ActorInterval, Func
 from assets.Config import Config
 from assets.Global_state import GLOBAL_STATE
 from assets.PhysicsManager import PhysicsManager
-from assets.Global_functions import apply_bullet_hitboxes
 from direct.showbase import DirectObject
 
 class Character(DirectObject.DirectObject):
@@ -44,11 +42,11 @@ class Character(DirectObject.DirectObject):
 
         physics.attach(self.node, self.np)
 
-        anims = set(self.actor.getAnimNames())
-        self.IDLE_ANIM = 'idle' if 'idle' in anims else (next(iter(anims)) if anims else None)
-        self.WALK_ANIM = 'running' if 'running' in anims else self.IDLE_ANIM
-        self.JUMP_ANIM = 'jumping' if 'jumping' in anims else None
-        self.ATTACK_ANIM = 'atack' if 'atack' in anims else None
+        self._anim_names = set(self.actor.getAnimNames())
+        self.IDLE_ANIM = 'idle' if 'idle' in self._anim_names else (next(iter(self._anim_names)) if self._anim_names else None)
+        self.WALK_ANIM = 'running' if 'running' in self._anim_names else self.IDLE_ANIM
+        self.JUMP_ANIM = 'jumping' if 'jumping' in self._anim_names else None
+        self.ATTACK_ANIM = 'atack' if 'atack' in self._anim_names else None
 
         if self.IDLE_ANIM:
             self.actor.loop(self.IDLE_ANIM)
@@ -90,12 +88,15 @@ class Character(DirectObject.DirectObject):
 
         self.speed = config.speed
 
-        self.ray_vis = [LineSegs(), LineSegs(), LineSegs(), LineSegs()]
-        self.ray_node = [None] * len(self.ray_vis)
-
-        for r in range(len(self.ray_vis)):
-            self.ray_vis[r].setThickness(2)
-            self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
+        self.debug_rays = bool(getattr(self.config, "debug_rays", False))
+        self.ray_vis: list[LineSegs] = []
+        self.ray_node: list = []
+        if self.debug_rays:
+            self.ray_vis = [LineSegs(), LineSegs(), LineSegs(), LineSegs()]
+            self.ray_node = [None] * len(self.ray_vis)
+            for r in range(len(self.ray_vis)):
+                self.ray_vis[r].setThickness(2)
+                self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
         self.is_climbing = False
         self.climb_progress = 0.0
@@ -116,6 +117,19 @@ class Character(DirectObject.DirectObject):
         if current < target:
             return min(current + max_delta, target)
         return max(current - max_delta, target)
+
+    def _draw_debug_ray(self, idx: int, from_pos: Vec3, to_pos: Vec3):
+        if not self.debug_rays:
+            return
+        self.ray_vis[idx].reset()
+        self.ray_vis[idx].setThickness(2)
+        self.ray_vis[idx].setColor(1, 0, 0, 1)
+        self.ray_vis[idx].moveTo(from_pos)
+        self.ray_vis[idx].drawTo(to_pos)
+        node = self.ray_node[idx]
+        if node and not node.isEmpty():
+            node.removeNode()
+        self.ray_node[idx] = self.render.attachNewNode(self.ray_vis[idx].create())
 
     def perform_attack(self):
         self._play_attack_animation()
@@ -164,7 +178,7 @@ class Character(DirectObject.DirectObject):
         if attacking:
             return
 
-        if jump_started and self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
+        if jump_started and self.JUMP_ANIM and self.JUMP_ANIM in self._anim_names:
             if self.jump_sequence:
                 self.jump_sequence.finish()
 
@@ -209,7 +223,7 @@ class Character(DirectObject.DirectObject):
         vel.setZ(max(vel.z, 0.0) + self.jump_impulse)
         self.node.setLinearVelocity(vel)
 
-        if self.JUMP_ANIM and self.JUMP_ANIM in self.actor.getAnimNames():
+        if self.JUMP_ANIM and self.JUMP_ANIM in self._anim_names:
             if self.jump_sequence:
                 self.jump_sequence.finish()
 
@@ -237,16 +251,9 @@ class Character(DirectObject.DirectObject):
         head_hit  = self.physics.world.rayTestClosest(head_from, head_to)
         ledge_hit = self.physics.world.rayTestClosest(ledge_from, ledge_to)
 
-        for nb, (from_pos, to_pos) in enumerate([(chest_from, chest_to), (head_from, head_to), (ledge_from, ledge_to)]):
-            self.ray_vis[nb + 1].reset()
-            self.ray_vis[nb + 1].setThickness(2)
-
-            self.ray_vis[nb + 1].setColor(1, 0, 0, 1)
-            self.ray_vis[nb + 1].moveTo(from_pos)
-            self.ray_vis[nb + 1].drawTo(to_pos)
-            
-            self.ray_node[nb + 1].removeNode()
-            self.ray_node[nb + 1] = self.render.attachNewNode(self.ray_vis[nb + 1].create())
+        self._draw_debug_ray(1, chest_from, chest_to)
+        self._draw_debug_ray(2, head_from, head_to)
+        self._draw_debug_ray(3, ledge_from, ledge_to)
 
         if chest_hit.hasHit() and not head_hit.hasHit() and ledge_hit.hasHit():
             return True, ledge_hit.getHitPos(), chest_hit.getHitNormal()
@@ -306,15 +313,7 @@ class Character(DirectObject.DirectObject):
         to_pos = self.np.getPos() - Vec3(0, 0, 0.75)
         result = self.physics.world.rayTestClosest(from_pos, to_pos)
 
-        self.ray_vis[0].reset()
-        self.ray_vis[0].setThickness(2)
-
-        self.ray_vis[0].setColor(1, 0, 0, 1)
-        self.ray_vis[0].moveTo(from_pos)
-        self.ray_vis[0].drawTo(to_pos)
-
-        self.ray_node[0].removeNode()
-        self.ray_node[0] = self.render.attachNewNode(self.ray_vis[0].create())
+        self._draw_debug_ray(0, from_pos, to_pos)
 
         return result.hasHit()
 
@@ -331,8 +330,7 @@ class Character(DirectObject.DirectObject):
             return
 
         move_x = float(self.keys['d']) - float(self.keys['q'])
-        move_y = 0.0
-        move_vec = Vec3(move_x, move_y, 0.0)
+        has_move_input = abs(move_x) > 1e-5
 
         on_ground = self.on_ground()
         if on_ground:
@@ -353,24 +351,23 @@ class Character(DirectObject.DirectObject):
             return
 
         vel = self.node.getLinearVelocity()
-        if move_vec.length() > 0:
+        if has_move_input:
             self.is_moving = True
-            move_vec.normalize()
-            desired_x = move_vec.x * self.speed
-            desired_y = move_vec.y * self.speed
+            desired_x = move_x * self.speed
+            desired_y = 0.0
             accel = self.ground_accel if on_ground else self.air_accel
             vel.setX(self._approach(vel.x, desired_x, accel * dt))
             vel.setY(self._approach(vel.y, desired_y, accel * dt))
             self.node.setLinearVelocity(vel)
 
-            angle = math.degrees(math.atan2(move_x, -move_y))
+            angle = 90.0 if move_x > 0.0 else -90.0
             current_h = self.np.getH()
             h_lerp = min(1.0, dt * 20.0)
             self.np.setH(current_h + (((angle - current_h + 180.0) % 360.0) - 180.0) * h_lerp)
 
             current = self.actor.getCurrentAnim()
             if on_ground and not self.is_jumping and not self.is_attacking:
-                if current != self.WALK_ANIM and self.WALK_ANIM in self.actor.getAnimNames():
+                if current != self.WALK_ANIM and self.WALK_ANIM in self._anim_names:
                     self.actor.stop()
                     self.actor.loop(self.WALK_ANIM)
         else:

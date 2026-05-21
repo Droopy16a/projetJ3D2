@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Dict
 from panda3d.core import (
     Vec3,
@@ -78,14 +77,51 @@ class Mob(DirectObject.DirectObject):
         self.bounds = (from_pos_bound, to_pos_bound) if from_pos_bound and to_pos_bound else None
         self.np.setH(90)
 
-        self.ray_vis = [LineSegs(), LineSegs()]
-        self.ray_node = [None] * len(self.ray_vis)
-
-        for r in range(len(self.ray_vis)):
-            self.ray_vis[r].setThickness(2)
-            self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
+        self.debug_rays = bool(getattr(self.config, "debug_rays", False))
+        self.ray_vis: list[LineSegs] = []
+        self.ray_node: list = []
+        if self.debug_rays:
+            self.ray_vis = [LineSegs(), LineSegs()]
+            self.ray_node = [None] * len(self.ray_vis)
+            for r in range(len(self.ray_vis)):
+                self.ray_vis[r].setThickness(2)
+                self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
         self.set_mode(mode)
+
+    def _reset_controls(self):
+        for k in self.keys:
+            self.keys[k] = False
+
+    def _ensure_ray_nodes(self):
+        if not self.debug_rays:
+            return
+        for r in range(len(self.ray_vis)):
+            node = self.ray_node[r]
+            if node is None or node.isEmpty():
+                self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
+
+    def _draw_debug_ray(self, idx: int, from_pos: Vec3, to_pos: Vec3):
+        if not self.debug_rays:
+            return
+        self.ray_vis[idx].reset()
+        self.ray_vis[idx].setThickness(2)
+        self.ray_vis[idx].setColor(1, 0, 0, 1)
+        self.ray_vis[idx].moveTo(from_pos)
+        self.ray_vis[idx].drawTo(to_pos)
+        node = self.ray_node[idx]
+        if node and not node.isEmpty():
+            node.removeNode()
+        self.ray_node[idx] = self.render.attachNewNode(self.ray_vis[idx].create())
+
+    def _cancel_attack(self):
+        if hasattr(self, "attack_seq"):
+            try:
+                if self.attack_seq and self.attack_seq.isPlaying():
+                    self.attack_seq.finish()
+            except Exception:
+                pass
+        self.is_attacking = False
 
     def _current_anim(self):
         if not self.actor:
@@ -117,8 +153,14 @@ class Mob(DirectObject.DirectObject):
         next_mode = mode.upper()
         if next_mode == self.mode:
             return
-
+        previous_mode = self.mode
         self.mode = next_mode
+
+        if previous_mode == 'PLAYER' and self._controls_bound:
+            self.ignoreAll()
+            self._controls_bound = False
+            self._reset_controls()
+            self._cancel_attack()
 
         if self.mode in ('AI', 'PLAYER', 'IDLE'):
             self.enable_physics()
@@ -132,6 +174,22 @@ class Mob(DirectObject.DirectObject):
             else:
                 self.disable_physics()
         elif self.mode == 'AI':
+            heading = (self.np.getH() + 360.0) % 360.0
+            if heading > 180.0:
+                heading -= 360.0
+            if abs(heading - 90.0) <= abs(heading + 90.0):
+                self.direction = 1
+                self.np.setH(90.0)
+            else:
+                self.direction = -1
+                self.np.setH(-90.0)
+            self._cancel_attack()
+            self.is_moving = False
+            vel = self.node.getLinearVelocity()
+            vel.setX(0)
+            vel.setY(0)
+            self.node.setLinearVelocity(vel)
+            self._ensure_ray_nodes()
             self._loop_anim(self.WALK_ANIM)
         elif self.mode == 'IDLE':
             vel = self.node.getLinearVelocity()
@@ -244,14 +302,8 @@ class Mob(DirectObject.DirectObject):
         hitzone = self.physics.world.rayTestClosest(from_hitzone, to_hitzone)
         ledge = self.physics.world.rayTestClosest(ledge_from, ledge_to)
 
-        for nb, i in enumerate([(from_hitzone, to_hitzone), (ledge_from, ledge_to)]):
-            self.ray_vis[nb].reset()
-            self.ray_vis[nb].setThickness(2)
-            self.ray_vis[nb].setColor(1, 0, 0, 1)
-            self.ray_vis[nb].moveTo(i[0])
-            self.ray_vis[nb].drawTo(i[1])
-            self.ray_node[nb].removeNode()
-            self.ray_node[nb] = self.render.attachNewNode(self.ray_vis[nb].create())
+        self._draw_debug_ray(0, from_hitzone, to_hitzone)
+        self._draw_debug_ray(1, ledge_from, ledge_to)
 
         if hitzone.hasHit() and hitzone.getNode().getName() == 'Character':
             if not self.is_attacking:
@@ -291,19 +343,17 @@ class Mob(DirectObject.DirectObject):
         current = self._current_anim()
         if GLOBAL_STATE.get_player_id() == 1:
             move_x = float(self.keys['d']) - float(self.keys['q'])
-            move_y = 0.0
-            move_vec = Vec3(move_x, move_y, 0.0)
+            has_move_input = abs(move_x) > 1e-5
             vel = self.node.getLinearVelocity()
 
-            if move_vec.length() > 0:
-                move_vec.normalize()
-                desired_x = move_vec.x * self.control_speed
-                desired_y = move_vec.y * self.control_speed
+            if has_move_input:
+                desired_x = move_x * self.control_speed
+                desired_y = 0.0
                 vel.setX(self._approach(vel.x, desired_x, self.ground_accel * dt))
                 vel.setY(self._approach(vel.y, desired_y, self.ground_accel * dt))
                 self.node.setLinearVelocity(vel)
 
-                angle = math.degrees(math.atan2(move_x, -move_y))
+                angle = 90.0 if move_x > 0.0 else -90.0
                 current_h = self.np.getH()
                 h_lerp = min(1.0, dt * 20.0)
                 self.np.setH(current_h + (((angle - current_h + 180.0) % 360.0) - 180.0) * h_lerp)

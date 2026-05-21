@@ -12,14 +12,21 @@ class Config:
     cube_mass: float = 200.0
     boss_mass: float = 200.0
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
-    debug_physics: bool = True
+    debug_physics: bool = False
+    debug_rays: bool = False
+    debug_hitbox_logs: bool = False
+    use_modular_world: bool = True
+    module_dir: str = "./assets/models/modules"
+    module_count: int = 7
+    module_spacing: float = 0.2
+    module_seed: int | None = None
 
     speed: float = 10.0
     jump_base: float = 7.0
     jump_charge_max: float = 10.0
     jump_charge_rate: float = 0.1
 
-    player_model: str = "./assets/models/persoepe.glb"
+    player_model: str = "./assets/models/persoepenoir.glb"
     mob_model: str = "./assets/models/mobAT_copy.glb"
     mob_visual_scale: float = 1.0
     mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -29,16 +36,23 @@ class Config:
 
     levels: list = field(default_factory=lambda: [
         {
-            "level_model": "./assets/models/plat3.glb",
-            "ignore": ["mur_back", "plafond", "porte", "poteau"],
-            "size": 1.0,
+            "level_model": "./assets/models/modules/base.glb",
+            "ignore": ["ignore"],
+            "size": 2.0,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         },
         {
-            "level_model": "./assets/models/plat4.glb",
-            "ignore": ["mur", "tonneau", "box", "rid", "fontaine"],
-            "size": 0.5,
+            "level_model": "./assets/models/modules/stair_U.glb",
+            "ignore": ["ignore.001"],
+            "size": 2.0,
+            "pos": (0, 0, 0),
+            "Hpr": (0, 0, 0)
+        },
+        {
+            "level_model": "./assets/models/modules/stair_D.glb",
+            "ignore": ["ignore.002"],
+            "size": 2.0,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         }
