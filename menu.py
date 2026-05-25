@@ -31,6 +31,11 @@ def discover_server(timeout=5):
             if len(parts) >= 3:
                 server_ip = parts[1]
                 server_port = parts[2]
+                if len(parts) >= 4:
+                    try:
+                        os.environ["DUNGEON_WORLD_SEED"] = str(int(parts[3]))
+                    except ValueError:
+                        pass
                 sock.close()
                 return f"{server_ip}:{server_port}"
         
