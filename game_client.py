@@ -29,6 +29,7 @@ from panda3d.core import (
     CardMaker,
     ConfigVariableString,
     DirectionalLight,
+    Filename,
     Fog,
     Point2,
     Point3,
@@ -90,9 +91,12 @@ DUNGEON_SWAP_MANA_COST = 35.0
 MOB_SPAWN_MANA_COST = 25.0
 MOB_DROP_MANA_COST = 25.0
 
-HERO_DAMAGE = 22
-BOSS_DAMAGE = 18
-MOB_DAMAGE = 12
+HERO_DAMAGE = 8
+BOSS_DAMAGE = HERO_MAX_HP
+MOB_DAMAGE = HERO_MAX_HP
+BOSS_READY_HERO_LEVEL = 9
+HERO_DAMAGE_PER_LEVEL = 7
+HERO_HEAL_PER_MOB_KILL = 10
 HUD_UPDATE_INTERVAL = 0.05
 FALL_RECOVERY_DEPTH = 12.0
 FALL_RECOVERY_SAFE_X_PADDING = 0.9
@@ -133,6 +137,7 @@ class Game(ShowBase):
         self.camera.setPos(0, -40, 6)
         self.camera.setHpr(0, 0, 0)
         self._setup_lighting()
+        self._setup_ui_theme()
 
         self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
         self.ws_host = os.getenv("DUNGEON_ARISE_HOST", DEFAULT_HOST)
@@ -154,6 +159,7 @@ class Game(ShowBase):
         self.min_x, self.max_x = self.world.setLimit()
         self.goal_x = self.max_x - 2.0
         self._setup_boss_editor()
+        self._setup_hero_map()
 
         self.player_id: int | None = None
         self.hero: Character | None = None
@@ -168,6 +174,8 @@ class Game(ShowBase):
         self.hero_hp = HERO_MAX_HP
         self.boss_hp = BOSS_MAX_HP
         self.boss_mana = BOSS_MAX_MANA
+        self.hero_level = 0
+        self.hero_mob_kills = 0
         self.boss_phase_unlocked = False
         self.winner: str | None = None
 
@@ -197,15 +205,19 @@ class Game(ShowBase):
         self.active_vfx: list[dict[str, Any]] = []
         self.active_flashes: list[dict[str, Any]] = []
         self.status_timer = 0.0
+        self.last_boss_gate_status_time = 0.0
         self._last_world_layout_sig: tuple[tuple[int, float, float], ...] | None = None
         self.boss_inventory_open = False
         self.boss_inventory_dragging: str | None = None
         self.boss_inventory_previous_control: str | int = "boss"
         self.free_camera_keys = {key: False for key in ("z", "q", "s", "d")}
-
-        self._setup_hud()
         self._ui_cache: dict[str, Any] = {}
         self._ui_visible: dict[str, bool] = {}
+        self._ui_bar_state: dict[str, dict[str, Any]] = {}
+        self._ui_fade_state: dict[str, dict[str, Any]] = {}
+        self._ui_pulse_time = 0.0
+
+        self._setup_hud()
         self._pulse_model_template = self.loader.loadModel("models/misc/sphere")
 
         self.accept("f", self.spawn_local_mob_request)
@@ -214,7 +226,7 @@ class Game(ShowBase):
             self.accept(str(slot), self.select_control_slot, [slot])
         self.accept("b", self.select_control_boss)
         self.accept("0", self.select_control_boss)
-        self.accept("m", self._toggle_boss_editor_fullscreen)
+        self.accept("m", self._toggle_map_fullscreen)
         self.accept("e", self._toggle_boss_inventory)
         self.accept("z", self._set_free_camera_key, ["z", True])
         self.accept("z-up", self._set_free_camera_key, ["z", False])
@@ -267,61 +279,408 @@ class Game(ShowBase):
         # fog.setExpDensity(0.016)
         # self.render.setFog(fog)
 
+    def _setup_ui_theme(self):
+        self.ui_palette = {
+            "void": (0.006, 0.008, 0.011, 0.92),
+            "panel": (0.018, 0.021, 0.026, 0.78),
+            "panel_deep": (0.009, 0.011, 0.016, 0.92),
+            "panel_soft": (0.045, 0.041, 0.034, 0.34),
+            "track": (0.012, 0.014, 0.018, 0.92),
+            "track_light": (0.075, 0.070, 0.058, 0.28),
+            "gold": (0.93, 0.72, 0.33, 0.96),
+            "gold_dim": (0.48, 0.36, 0.19, 0.78),
+            "gold_soft": (1.0, 0.78, 0.36, 0.18),
+            "bronze": (0.54, 0.39, 0.22, 0.88),
+            "text": (0.94, 0.91, 0.83, 0.98),
+            "text_dim": (0.72, 0.68, 0.58, 0.88),
+            "text_muted": (0.48, 0.51, 0.52, 0.72),
+            "hp": (0.78, 0.065, 0.055, 0.96),
+            "hp_dark": (0.30, 0.025, 0.022, 0.94),
+            "mana": (0.13, 0.38, 0.82, 0.94),
+            "mana_dark": (0.035, 0.11, 0.28, 0.9),
+            "stamina": (0.28, 0.58, 0.28, 0.94),
+            "cooldown": (0.0, 0.0, 0.0, 0.56),
+            "shadow": (0.0, 0.0, 0.0, 0.54),
+            "danger": (1.0, 0.19, 0.12, 0.0),
+        }
+        self.ui_rarity_colors = {
+            "common": (0.56, 0.49, 0.39, 0.86),
+            "uncommon": (0.34, 0.70, 0.46, 0.9),
+            "rare": (0.33, 0.55, 0.95, 0.92),
+            "epic": (0.62, 0.40, 0.92, 0.92),
+            "legendary": (0.96, 0.66, 0.24, 0.98),
+        }
+        self.ui_font = None
+        font_candidates = [
+            os.path.join("assets", "fonts", "Cinzel-Regular.ttf"),
+            os.path.join("assets", "fonts", "CormorantGaramond-Regular.ttf"),
+            r"C:\Windows\Fonts\georgia.ttf",
+            r"C:\Windows\Fonts\cambria.ttf",
+            r"C:\Windows\Fonts\times.ttf",
+        ]
+        for font_path in font_candidates:
+            if not os.path.exists(font_path):
+                continue
+            try:
+                self.ui_font = self.loader.loadFont(Filename.fromOsSpecific(font_path))
+                break
+            except Exception:
+                self.ui_font = None
+
+    def _make_ui_text(self, **kwargs):
+        font = getattr(self, "ui_font", None)
+        if font is not None and "font" not in kwargs:
+            kwargs["font"] = font
+        return OnscreenText(**kwargs)
+
+    @staticmethod
+    def _inset_frame(frame: tuple[float, float, float, float], amount: float) -> tuple[float, float, float, float]:
+        left, right, bottom, top = frame
+        return (left + amount, right - amount, bottom + amount, top - amount)
+
+    @staticmethod
+    def _expand_frame(frame: tuple[float, float, float, float], amount: float) -> tuple[float, float, float, float]:
+        left, right, bottom, top = frame
+        return (left - amount, right + amount, bottom - amount, top + amount)
+
+    def _make_ui_frame(
+        self,
+        parent,
+        frame_color: tuple[float, float, float, float],
+        frame_size: tuple[float, float, float, float],
+        pos: tuple[float, float, float] = (0, 0, 0),
+    ):
+        frame = DirectFrame(
+            parent=parent,
+            frameColor=frame_color,
+            frameSize=frame_size,
+            pos=pos,
+        )
+        frame.setTransparency(TransparencyAttrib.MAlpha)
+        return frame
+
+    def _make_fantasy_panel(
+        self,
+        parent,
+        frame_size: tuple[float, float, float, float],
+        pos: tuple[float, float, float],
+        *,
+        name: str = "panel",
+        frame_color: tuple[float, float, float, float] | None = None,
+    ):
+        palette = self.ui_palette
+        root = self._make_ui_frame(
+            parent,
+            frame_color or palette["panel"],
+            frame_size,
+            pos,
+        )
+        root["frameSize"] = frame_size
+        self._make_ui_frame(root, palette["shadow"], self._expand_frame(frame_size, 0.014), pos=(0.018, 0, -0.018))
+        self._make_ui_frame(root, palette["gold_dim"], self._expand_frame(frame_size, 0.006))
+        self._make_ui_frame(root, palette["panel_deep"], self._inset_frame(frame_size, 0.012))
+        left, right, _bottom, top = frame_size
+        self._make_ui_frame(root, palette["track_light"], (left + 0.018, right - 0.018, top - 0.026, top - 0.012))
+        glow = self._make_ui_frame(root, palette["gold_soft"], self._inset_frame(frame_size, 0.022))
+        glow.setAlphaScale(0.55)
+        return root
+
+    def _make_framed_bar(
+        self,
+        parent,
+        *,
+        pos: tuple[float, float, float],
+        width: float,
+        height: float,
+        label: str,
+        icon: str,
+        bar_color: tuple[float, float, float, float],
+        trail_color: tuple[float, float, float, float],
+    ) -> dict[str, Any]:
+        palette = self.ui_palette
+        frame = (-0.066, width + 0.018, -height - 0.018, 0.028)
+        root = self._make_ui_frame(parent, (0, 0, 0, 0), frame, pos)
+        self._make_ui_frame(root, palette["shadow"], self._expand_frame(frame, 0.006), pos=(0.012, 0, -0.011))
+        self._make_ui_frame(root, palette["bronze"], frame)
+        self._make_ui_frame(root, palette["track"], (0, width, -height, 0))
+        trail = DirectWaitBar(
+            parent=root,
+            text="",
+            range=1.0,
+            value=1.0,
+            frameColor=(0, 0, 0, 0),
+            barColor=trail_color,
+            frameSize=(0, width, -height, 0),
+            pos=(0, 0, 0),
+        )
+        trail.setTransparency(TransparencyAttrib.MAlpha)
+        bar = DirectWaitBar(
+            parent=root,
+            text="",
+            range=1.0,
+            value=1.0,
+            frameColor=(0, 0, 0, 0),
+            barColor=bar_color,
+            frameSize=(0, width, -height, 0),
+            pos=(0, 0, 0),
+        )
+        bar.setTransparency(TransparencyAttrib.MAlpha)
+        self._make_ui_frame(root, (1.0, 0.95, 0.72, 0.10), (0.006, width - 0.006, -height * 0.42, -0.005))
+        flash = self._make_ui_frame(root, self.ui_palette["danger"], (0, width, -height, 0))
+        icon_frame = self._make_ui_frame(
+            root,
+            palette["gold_dim"],
+            (-0.052, 0.028, -height - 0.007, 0.018),
+            pos=(-0.002, 0, 0),
+        )
+        self._make_ui_text(
+            text=icon,
+            pos=(-0.012, -height * 0.73),
+            align=TextNode.ACenter,
+            scale=max(0.022, height * 0.62),
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.88),
+            mayChange=False,
+            parent=icon_frame,
+        )
+        label_text = self._make_ui_text(
+            text=label,
+            pos=(0.044, height * 0.05),
+            align=TextNode.ALeft,
+            scale=max(0.024, height * 0.54),
+            fg=palette["text_dim"],
+            shadow=(0, 0, 0, 0.86),
+            mayChange=True,
+            parent=root,
+        )
+        value_text = self._make_ui_text(
+            text="",
+            pos=(width * 0.5, -height * 0.74),
+            align=TextNode.ACenter,
+            scale=max(0.022, height * 0.50),
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.88),
+            mayChange=True,
+            parent=root,
+        )
+        return {
+            "root": root,
+            "bar": bar,
+            "trail": trail,
+            "flash": flash,
+            "label": label_text,
+            "text": value_text,
+            "width": width,
+            "height": height,
+        }
+
+    def _set_animated_bar_value(
+        self,
+        key: str,
+        widget,
+        value: float,
+        *,
+        trail_widget=None,
+        flash_widget=None,
+        speed: float = 14.0,
+        trail_speed: float = 4.2,
+    ):
+        value = float(value)
+        state = self._ui_bar_state.get(key)
+        if state is None:
+            state = {
+                "widget": widget,
+                "target": value,
+                "display": value,
+                "trail": trail_widget,
+                "trail_display": value,
+                "flash": flash_widget,
+                "flash_time": 0.0,
+                "speed": speed,
+                "trail_speed": trail_speed,
+            }
+            self._ui_bar_state[key] = state
+            widget["value"] = value
+            if trail_widget is not None:
+                trail_widget["value"] = value
+            return
+
+        previous = float(state.get("target", value))
+        state["widget"] = widget
+        state["trail"] = trail_widget
+        state["flash"] = flash_widget
+        state["speed"] = speed
+        state["trail_speed"] = trail_speed
+        state["target"] = value
+        if value < previous - 0.001:
+            state["flash_time"] = 0.26
+            state["trail_display"] = max(float(state.get("trail_display", previous)), previous)
+        elif value > previous + 0.001:
+            state["trail_display"] = value
+
+    def _update_ui_animations(self, dt: float):
+        self._ui_pulse_time += dt
+        for key, state in list(self._ui_bar_state.items()):
+            widget = state.get("widget")
+            if widget is None:
+                continue
+            target = float(state.get("target", 0.0))
+            display = float(state.get("display", target))
+            blend = 1.0 - math.exp(-float(state.get("speed", 14.0)) * max(0.0, dt))
+            display += (target - display) * blend
+            if abs(display - target) < 0.001:
+                display = target
+            state["display"] = display
+            widget["value"] = display
+
+            trail_widget = state.get("trail")
+            if trail_widget is not None:
+                trail_display = float(state.get("trail_display", display))
+                if trail_display > target:
+                    trail_blend = 1.0 - math.exp(-float(state.get("trail_speed", 4.2)) * max(0.0, dt))
+                else:
+                    trail_blend = blend
+                trail_display += (target - trail_display) * trail_blend
+                if abs(trail_display - target) < 0.001:
+                    trail_display = target
+                state["trail_display"] = trail_display
+                trail_widget["value"] = max(display, trail_display)
+
+            flash_widget = state.get("flash")
+            if flash_widget is not None:
+                flash_time = max(0.0, float(state.get("flash_time", 0.0)) - dt)
+                state["flash_time"] = flash_time
+                alpha = min(0.38, flash_time / 0.26 * 0.38) if flash_time > 0 else 0.0
+                flash_widget["frameColor"] = (1.0, 0.12, 0.07, alpha)
+
+        for key, state in list(self._ui_fade_state.items()):
+            widget = state.get("widget")
+            if widget is None:
+                self._ui_fade_state.pop(key, None)
+                continue
+            value = float(state.get("value", 1.0))
+            target = float(state.get("target", 1.0))
+            blend = 1.0 - math.exp(-10.0 * max(0.0, dt))
+            value += (target - value) * blend
+            if abs(value - target) < 0.01:
+                value = target
+                if target >= 1.0:
+                    self._ui_fade_state.pop(key, None)
+            state["value"] = value
+            widget.setAlphaScale(value)
+
+    def _is_mouse_over_widget(self, widget) -> bool:
+        if widget is None or widget.isHidden() or not self.mouseWatcherNode.hasMouse():
+            return False
+        try:
+            left, right, bottom, top = widget["frameSize"]
+        except Exception:
+            return False
+        aspect = self.getAspectRatio()
+        mouse_x = self.mouseWatcherNode.getMouseX() * aspect
+        mouse_z = self.mouseWatcherNode.getMouseY()
+        pos = widget.getPos(self.aspect2d)
+        local_x = mouse_x - pos.x
+        local_z = mouse_z - pos.z
+        return left <= local_x <= right and bottom <= local_z <= top
+
+    def _update_role_ui_layout(self):
+        aspect = float(self.getAspectRatio())
+        margin = 0.17
+        if hasattr(self, "boss_control_root"):
+            self.boss_control_root.setPos(-aspect + margin, 0, 0.84)
+        if hasattr(self, "hero_bars_root"):
+            self.hero_bars_root.setPos(-aspect + margin, 0, 0.88)
+        if hasattr(self, "hero_map_root"):
+            self._apply_hero_map_layout()
+        if hasattr(self, "boss_mob_slots_root"):
+            slot_size = getattr(self, "boss_slot_size", 0.108)
+            slot_gap = getattr(self, "boss_slot_gap", 0.132)
+            total_width = (MAX_ACTIVE_MOBS - 1) * slot_gap + slot_size
+            self.boss_mob_slots_root.setPos(-total_width * 0.5, 0, -0.78)
+
     def _setup_boss_editor(self):
+        palette = self.ui_palette
         self.editor_enabled = bool(getattr(self.world, "module_nodes", []))
         self.editor_texture_cache: dict[str, Any] = {}
-        self.editor_frame = (-0.34, 0.34, -0.23, 0.23)
+        self.editor_frame = (-0.39, 0.39, -0.265, 0.265)
         self.editor_layout_sig: tuple[bool, float] | None = None
-        self.editor_root = DirectFrame(
+        self.editor_root = self._make_ui_frame(
             parent=self.aspect2d,
-            frameColor=(0.015, 0.02, 0.025, 0.82),
-            frameSize=self.editor_frame,
-            pos=(1.38, 0, 0.7),
+            frame_color=palette["panel"],
+            frame_size=self.editor_frame,
+            pos=(1.38, 0, 0.68),
         )
-        self.editor_root.setTransparency(TransparencyAttrib.MAlpha)
         self.editor_root.hide()
         self.editor_expanded = False
         self.editor_root.bind(DGG.B1PRESS, self._on_editor_panel_press)
 
-        self.editor_border = DirectFrame(
-            parent=self.editor_root,
-            frameColor=(0.96, 0.78, 0.35, 0.82),
-            frameSize=self.editor_frame,
-            pos=(0, 0, 0),
+        self.editor_shadow = self._make_ui_frame(
+            self.editor_root,
+            palette["shadow"],
+            self._expand_frame(self.editor_frame, 0.018),
+            pos=(0.018, 0, -0.018),
         )
-        self.editor_border.setTransparency(TransparencyAttrib.MAlpha)
-        self.editor_backdrop = DirectFrame(
-            parent=self.editor_root,
-            frameColor=(0.035, 0.045, 0.05, 0.92),
-            frameSize=(-0.325, 0.325, -0.215, 0.215),
-            pos=(0, 0, 0),
+        self.editor_border = self._make_ui_frame(
+            self.editor_root,
+            palette["gold_dim"],
+            self._expand_frame(self.editor_frame, 0.006),
         )
-        self.editor_backdrop.setTransparency(TransparencyAttrib.MAlpha)
+        self.editor_backdrop = self._make_ui_frame(
+            self.editor_root,
+            palette["panel_deep"],
+            self._inset_frame(self.editor_frame, 0.018),
+        )
+        self.editor_header = self._make_ui_frame(
+            self.editor_root,
+            (0.12, 0.095, 0.055, 0.45),
+            (-0.36, 0.36, 0.145, 0.235),
+        )
+        self.editor_vignette_top = self._make_ui_frame(
+            self.editor_root,
+            (0.0, 0.0, 0.0, 0.26),
+            (-0.36, 0.36, 0.105, 0.145),
+        )
+        self.editor_vignette_bottom = self._make_ui_frame(
+            self.editor_root,
+            (0.0, 0.0, 0.0, 0.22),
+            (-0.36, 0.36, -0.235, -0.19),
+        )
         self.editor_grid = self.editor_root.attachNewNode("editor_grid")
 
-        self.editor_title = OnscreenText(
-            text="BOSS MAP",
-            pos=(0, 0.162),
-            align=TextNode.ACenter,
-            scale=0.032,
-            fg=(1.0, 0.88, 0.48, 0.95),
-            shadow=(0, 0, 0, 0.8),
+        self.editor_title = self._make_ui_text(
+            text="DUNGEON",
+            pos=(-0.335, 0.172),
+            align=TextNode.ALeft,
+            scale=0.034,
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.86),
             mayChange=True,
             parent=self.editor_root,
         )
-        self.editor_key_badge = DirectFrame(
+        self.editor_subtitle = self._make_ui_text(
+            text="WAR TABLE",
+            pos=(-0.335, 0.128),
+            align=TextNode.ALeft,
+            scale=0.018,
+            fg=palette["text_dim"],
+            shadow=(0, 0, 0, 0.82),
+            mayChange=True,
             parent=self.editor_root,
-            frameColor=(1.0, 0.82, 0.35, 0.9),
-            frameSize=(-0.035, 0.035, -0.024, 0.024),
-            pos=(0.29, 0, 0.164),
         )
-        self.editor_key_badge.setTransparency(TransparencyAttrib.MAlpha)
-        self.editor_mode_label = OnscreenText(
+        self.editor_key_badge = self._make_ui_frame(
+            parent=self.editor_root,
+            frame_color=palette["gold_dim"],
+            frame_size=(-0.04, 0.04, -0.026, 0.026),
+            pos=(0.315, 0, 0.175),
+        )
+        self.editor_mode_label = self._make_ui_text(
             text="M",
-            pos=(0, -0.008),
+            pos=(0, -0.009),
             align=TextNode.ACenter,
             scale=0.026,
-            fg=(0.08, 0.1, 0.1, 0.95),
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.75),
             mayChange=True,
             parent=self.editor_key_badge,
         )
@@ -343,12 +702,12 @@ class Game(ShowBase):
         self._apply_boss_editor_layout(force=True)
 
         if not self.editor_enabled:
-            self.editor_notice = OnscreenText(
-                text="No modules found.",
+            self.editor_notice = self._make_ui_text(
+                text="Dungeon map unavailable.",
                 pos=(0, 0),
                 align=TextNode.ACenter,
                 scale=0.034,
-                fg=(0.9, 0.7, 0.7, 0.9),
+                fg=palette["text_dim"],
                 shadow=(0, 0, 0, 0.8),
                 mayChange=False,
                 parent=self.editor_root,
@@ -356,10 +715,10 @@ class Game(ShowBase):
             return
 
         colors = [
-            (0.75, 0.45, 0.35, 1),
-            (0.35, 0.55, 0.8, 1),
-            (0.4, 0.7, 0.4, 1),
-            (0.65, 0.55, 0.85, 1),
+            (0.42, 0.30, 0.20, 0.95),
+            (0.24, 0.34, 0.46, 0.95),
+            (0.23, 0.38, 0.28, 0.95),
+            (0.36, 0.28, 0.48, 0.95),
         ]
 
         card_maker = CardMaker("module_card")
@@ -385,12 +744,12 @@ class Game(ShowBase):
             self.editor_room_to_module[room] = {"node": module, "meta": meta}
             self.editor_module_to_room[id(module)] = room
             if bool(meta.get("locked_endpoint", False)):
-                lock_label = OnscreenText(
-                    text="LOCK",
+                lock_label = self._make_ui_text(
+                    text="SEAL",
                     pos=(0, -0.035),
                     align=TextNode.ACenter,
                     scale=0.16,
-                    fg=(1.0, 0.86, 0.32, 0.95),
+                    fg=palette["gold"],
                     shadow=(0, 0, 0, 0.9),
                     mayChange=False,
                     parent=room.model,
@@ -411,19 +770,407 @@ class Game(ShowBase):
         icon_path = os.path.join("assets", "images", "player_icon.png")
         if not os.path.exists(icon_path):
             return
+        self.editor_player_glow = self._make_ui_frame(
+            self.editor_root,
+            self.ui_palette["gold_soft"],
+            (-0.028, 0.028, -0.028, 0.028),
+        )
+        self.editor_player_glow.setBin("fixed", 210)
+        self.editor_player_glow.setDepthTest(False)
+        self.editor_player_glow.setDepthWrite(False)
+        self.editor_player_glow.hide()
+        self.editor_player_marker = self._make_ui_frame(
+            self.editor_root,
+            (0.04, 0.025, 0.012, 0.92),
+            (-0.018, 0.018, -0.018, 0.018),
+        )
+        self.editor_player_marker.setBin("fixed", 220)
+        self.editor_player_marker.setDepthTest(False)
+        self.editor_player_marker.setDepthWrite(False)
+        self.editor_player_marker.hide()
         self.editor_player_icon = OnscreenImage(
             image=icon_path,
             parent=self.editor_root,
             pos=(0, 0, 0),
-            scale=(0.04, 1, 0.04),
+            scale=(0.044, 1, 0.044),
         )
-        self.editor_player_icon.setColor(1, 1, 1, 1)
+        self.editor_player_icon.setColor(1.0, 1.0, 1.0, 1)
         self.editor_player_icon.setTransparency(TransparencyAttrib.MAlpha)
-        self.editor_player_icon.setBin("fixed", 120)
+        self.editor_player_icon.setBin("fixed", 230)
         self.editor_player_icon.setDepthTest(False)
         self.editor_player_icon.setDepthWrite(False)
         self.editor_player_icon.setLightOff(1)
         self.editor_player_icon.hide()
+
+    def _setup_hero_map(self):
+        palette = self.ui_palette
+        self.hero_map_enabled = bool(getattr(self.world, "module_nodes", []))
+        self.hero_map_frame = (-0.39, 0.39, -0.265, 0.265)
+        self.hero_map_layout_sig: tuple[bool, float] | None = None
+        self.hero_map_expanded = False
+        self.hero_map_root = self._make_ui_frame(
+            parent=self.aspect2d,
+            frame_color=palette["panel"],
+            frame_size=self.hero_map_frame,
+            pos=(1.38, 0, 0.65),
+        )
+        self.hero_map_root.hide()
+
+        self.hero_map_shadow = self._make_ui_frame(
+            self.hero_map_root,
+            palette["shadow"],
+            self._expand_frame(self.hero_map_frame, 0.018),
+            pos=(0.018, 0, -0.018),
+        )
+        self.hero_map_border = self._make_ui_frame(
+            self.hero_map_root,
+            palette["gold_dim"],
+            self._expand_frame(self.hero_map_frame, 0.006),
+        )
+        self.hero_map_backdrop = self._make_ui_frame(
+            self.hero_map_root,
+            palette["panel_deep"],
+            self._inset_frame(self.hero_map_frame, 0.018),
+        )
+        self.hero_map_header = self._make_ui_frame(
+            self.hero_map_root,
+            (0.12, 0.095, 0.055, 0.45),
+            (-0.36, 0.36, 0.145, 0.235),
+        )
+        self.hero_map_vignette_top = self._make_ui_frame(
+            self.hero_map_root,
+            (0.0, 0.0, 0.0, 0.26),
+            (-0.36, 0.36, 0.105, 0.145),
+        )
+        self.hero_map_vignette_bottom = self._make_ui_frame(
+            self.hero_map_root,
+            (0.0, 0.0, 0.0, 0.22),
+            (-0.36, 0.36, -0.235, -0.19),
+        )
+        self.hero_map_grid = self.hero_map_root.attachNewNode("hero_map_grid")
+        self.hero_map_title = self._make_ui_text(
+            text="DUNGEON",
+            pos=(-0.335, 0.172),
+            align=TextNode.ALeft,
+            scale=0.034,
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.86),
+            mayChange=True,
+            parent=self.hero_map_root,
+        )
+        self.hero_map_subtitle = self._make_ui_text(
+            text="PATH",
+            pos=(-0.335, 0.128),
+            align=TextNode.ALeft,
+            scale=0.018,
+            fg=palette["text_dim"],
+            shadow=(0, 0, 0, 0.82),
+            mayChange=True,
+            parent=self.hero_map_root,
+        )
+        self.hero_map_readonly_badge = self._make_ui_frame(
+            parent=self.hero_map_root,
+            frame_color=palette["gold_dim"],
+            frame_size=(-0.04, 0.04, -0.026, 0.026),
+            pos=(0.315, 0, 0.175),
+        )
+        self._make_ui_text(
+            text="M",
+            pos=(0, -0.009),
+            align=TextNode.ACenter,
+            scale=0.026,
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.75),
+            mayChange=False,
+            parent=self.hero_map_readonly_badge,
+        )
+
+        self.hero_map_canvas = self.hero_map_root.attachNewNode("hero_map_canvas")
+        self.hero_map_scale = 0.12
+        self.hero_map_canvas.setScale(self.hero_map_scale, 1, self.hero_map_scale)
+        self.hero_map_canvas.setPos(0, 0, -0.02)
+        self.hero_map_room_half_w = 0.5
+        self.hero_map_room_half_h = 0.25
+        self.hero_map_dungeon = Dungeon()
+        self.hero_map_room_to_module: dict[Room, dict] = {}
+        self.hero_map_module_to_room: dict[int, Room] = {}
+        self.hero_map_player_icon = None
+        self.hero_map_player_glow = None
+        self.hero_map_player_marker = None
+
+        self._apply_hero_map_layout(force=True)
+        if not self.hero_map_enabled:
+            self.hero_map_notice = self._make_ui_text(
+                text="Dungeon map unavailable.",
+                pos=(0, 0),
+                align=TextNode.ACenter,
+                scale=0.034,
+                fg=palette["text_dim"],
+                shadow=(0, 0, 0, 0.8),
+                mayChange=False,
+                parent=self.hero_map_root,
+            )
+            return
+
+        colors = [
+            (0.42, 0.30, 0.20, 0.95),
+            (0.24, 0.34, 0.46, 0.95),
+            (0.23, 0.38, 0.28, 0.95),
+            (0.36, 0.28, 0.48, 0.95),
+        ]
+        card_maker = CardMaker("hero_map_module_card")
+        card_maker.set_frame(-0.5, 0.5, -0.25, 0.25)
+        for i, (module, meta) in enumerate(zip(self.world.module_nodes, self.world.module_meta)):
+            room = Room(meta.get("name", f"Module {i + 1}"), colors[i % len(colors)])
+            room.model = self.hero_map_canvas.attachNewNode(card_maker.generate())
+            texture = self._get_boss_editor_texture(meta)
+            if texture is not None:
+                room.model.setTexture(texture, 1)
+                room.model.setColor(1, 1, 1, 1)
+                room.model.setTransparency(TransparencyAttrib.MAlpha)
+            else:
+                room.model.setColor(*room.color)
+            self.hero_map_dungeon.add_room(room)
+            self.hero_map_room_to_module[room] = {"node": module, "meta": meta}
+            self.hero_map_module_to_room[id(module)] = room
+            if bool(meta.get("locked_endpoint", False)):
+                seal = self._make_ui_text(
+                    text="SEAL",
+                    pos=(0, -0.035),
+                    align=TextNode.ACenter,
+                    scale=0.16,
+                    fg=palette["gold"],
+                    shadow=(0, 0, 0, 0.9),
+                    mayChange=False,
+                    parent=room.model,
+                )
+                seal.setBin("fixed", 100)
+
+        self._sync_hero_map_from_world()
+        self._setup_hero_map_player_icon()
+
+    def _setup_hero_map_player_icon(self):
+        icon_path = os.path.join("assets", "images", "player_icon.png")
+        if not os.path.exists(icon_path):
+            return
+        self.hero_map_player_glow = self._make_ui_frame(
+            self.hero_map_root,
+            self.ui_palette["gold_soft"],
+            (-0.028, 0.028, -0.028, 0.028),
+        )
+        self.hero_map_player_glow.setBin("fixed", 210)
+        self.hero_map_player_glow.setDepthTest(False)
+        self.hero_map_player_glow.setDepthWrite(False)
+        self.hero_map_player_glow.hide()
+        self.hero_map_player_marker = self._make_ui_frame(
+            self.hero_map_root,
+            (0.04, 0.025, 0.012, 0.92),
+            (-0.018, 0.018, -0.018, 0.018),
+        )
+        self.hero_map_player_marker.setBin("fixed", 220)
+        self.hero_map_player_marker.setDepthTest(False)
+        self.hero_map_player_marker.setDepthWrite(False)
+        self.hero_map_player_marker.hide()
+        self.hero_map_player_icon = OnscreenImage(
+            image=icon_path,
+            parent=self.hero_map_root,
+            pos=(0, 0, 0),
+            scale=(0.044, 1, 0.044),
+        )
+        self.hero_map_player_icon.setColor(1.0, 1.0, 1.0, 1)
+        self.hero_map_player_icon.setTransparency(TransparencyAttrib.MAlpha)
+        self.hero_map_player_icon.setBin("fixed", 230)
+        self.hero_map_player_icon.setDepthTest(False)
+        self.hero_map_player_icon.setDepthWrite(False)
+        self.hero_map_player_icon.setLightOff(1)
+        self.hero_map_player_icon.hide()
+
+    def _apply_hero_map_layout(self, force: bool = False):
+        aspect = round(float(self.getAspectRatio()), 3)
+        sig = (bool(self.hero_map_expanded), aspect)
+        if not force and self.hero_map_layout_sig == sig:
+            return
+        self.hero_map_layout_sig = sig
+        if self.hero_map_expanded:
+            margin_x = 0.12
+            self.hero_map_frame = (-aspect + margin_x, aspect - margin_x, -0.86, 0.86)
+            self.hero_map_root["frameColor"] = self.ui_palette["void"]
+            self.hero_map_root.setPos(0, 0, 0)
+            self.hero_map_title.setScale(0.052)
+            self.hero_map_title.setPos(self.hero_map_frame[0] + 0.11, 0.755)
+            self.hero_map_subtitle.setScale(0.026)
+            self.hero_map_subtitle.setPos(self.hero_map_frame[0] + 0.112, 0.695)
+            self.hero_map_readonly_badge["frameSize"] = (-0.046, 0.046, -0.032, 0.032)
+            self.hero_map_readonly_badge.setPos(self.hero_map_frame[1] - 0.12, 0, 0.76)
+        else:
+            self.hero_map_frame = (-0.39, 0.39, -0.265, 0.265)
+            self.hero_map_root["frameColor"] = self.ui_palette["panel"]
+            self.hero_map_root.setPos(aspect - 0.47, 0, 0.65)
+            self.hero_map_title.setScale(0.034)
+            self.hero_map_title.setPos(-0.335, 0.172)
+            self.hero_map_subtitle.setScale(0.018)
+            self.hero_map_subtitle.setPos(-0.335, 0.128)
+            self.hero_map_readonly_badge["frameSize"] = (-0.04, 0.04, -0.026, 0.026)
+            self.hero_map_readonly_badge.setPos(0.315, 0, 0.175)
+        self.hero_map_root["frameSize"] = self.hero_map_frame
+
+        left, right, bottom, top = self.hero_map_frame
+        inset = 0.026 if self.hero_map_expanded else 0.018
+        self.hero_map_shadow["frameSize"] = self._expand_frame(self.hero_map_frame, 0.018)
+        self.hero_map_border["frameSize"] = self._expand_frame(self.hero_map_frame, 0.006)
+        self.hero_map_backdrop["frameSize"] = (left + inset, right - inset, bottom + inset, top - inset)
+        header_h = 0.14 if self.hero_map_expanded else 0.09
+        self.hero_map_header["frameSize"] = (left + inset, right - inset, top - header_h, top - inset)
+        self.hero_map_vignette_top["frameSize"] = (left + inset, right - inset, top - header_h - 0.035, top - header_h)
+        self.hero_map_vignette_bottom["frameSize"] = (left + inset, right - inset, bottom + inset, bottom + inset + 0.052)
+        self._rebuild_hero_map_grid()
+        self._fit_hero_map_canvas()
+
+    def _rebuild_hero_map_grid(self):
+        self.hero_map_grid.node().removeAllChildren()
+        left, right, bottom, top = self.hero_map_frame
+        line_color = (0.78, 0.61, 0.34, 0.13) if self.hero_map_expanded else (0.78, 0.61, 0.34, 0.09)
+        line_count = 10 if self.hero_map_expanded else 5
+        thickness = 0.003 if self.hero_map_expanded else 0.0025
+        for i in range(1, line_count):
+            x = left + (right - left) * (i / line_count)
+            cm = CardMaker("hero_map_grid_v")
+            cm.set_frame(-thickness * 0.5, thickness * 0.5, bottom, top)
+            line = self.hero_map_grid.attachNewNode(cm.generate())
+            line.setPos(x, 0, 0)
+            line.setColor(*line_color)
+            line.setTransparency(TransparencyAttrib.MAlpha)
+
+            z = bottom + (top - bottom) * (i / line_count)
+            cm = CardMaker("hero_map_grid_h")
+            cm.set_frame(left, right, -thickness * 0.5, thickness * 0.5)
+            line = self.hero_map_grid.attachNewNode(cm.generate())
+            line.setPos(0, 0, z)
+            line.setColor(*line_color)
+            line.setTransparency(TransparencyAttrib.MAlpha)
+
+    def _sync_hero_map_from_world(self):
+        if not getattr(self, "hero_map_enabled", False):
+            return
+        entries = []
+        for room, mapping in self.hero_map_room_to_module.items():
+            node = mapping["node"]
+            meta = mapping["meta"]
+            center = float(node.getX() + meta.get("center_offset", 0.0))
+            entries.append((center, room, node, meta))
+        if not entries:
+            return
+        entries.sort(key=lambda item: item[0])
+        start_x = -(len(entries) - 1) * 0.5
+        for index, (_center, room, node, meta) in enumerate(entries):
+            room.model.setPos(start_x + index, 0, 0.0)
+        self._relink_hero_map_rooms(entries)
+        self._fit_hero_map_canvas()
+
+    def _relink_hero_map_rooms(self, entries: list[tuple[float, Room, Any, dict]]):
+        for room in self.hero_map_dungeon.rooms:
+            if room.corridor_left:
+                room.corridor_left.removeNode()
+            if room.corridor_right:
+                room.corridor_right.removeNode()
+            room.corridor_left = None
+            room.corridor_right = None
+            room.left = None
+            room.right = None
+        rooms = [entry[1] for entry in entries]
+        for left_room, right_room in zip(rooms, rooms[1:]):
+            corridor = self.hero_map_dungeon.create_corridor(self.hero_map_canvas, left_room, right_room)
+            corridor.setColor(0.96, 0.70, 0.28, 0.72)
+            corridor.setTransparency(TransparencyAttrib.MAlpha)
+            left_room.right = right_room
+            right_room.left = left_room
+            left_room.corridor_right = corridor
+            right_room.corridor_left = corridor
+
+    def _fit_hero_map_canvas(self):
+        if not getattr(self, "hero_map_dungeon", None) or not self.hero_map_dungeon.rooms:
+            return
+        min_x = min(room.model.getX() - self.hero_map_room_half_w for room in self.hero_map_dungeon.rooms)
+        max_x = max(room.model.getX() + self.hero_map_room_half_w for room in self.hero_map_dungeon.rooms)
+        min_z = min(room.model.getZ() - self.hero_map_room_half_h for room in self.hero_map_dungeon.rooms)
+        max_z = max(room.model.getZ() + self.hero_map_room_half_h for room in self.hero_map_dungeon.rooms)
+        content_w = max(0.01, max_x - min_x)
+        content_h = max(0.01, max_z - min_z)
+        content_cx = (min_x + max_x) * 0.5
+        content_cz = (min_z + max_z) * 0.5
+        left, right, bottom, top = self.hero_map_frame
+        margin_x = 0.18 if self.hero_map_expanded else 0.055
+        margin_y = 0.23 if self.hero_map_expanded else 0.075
+        available_w = max(0.01, (right - left) - margin_x * 2)
+        available_h = max(0.01, (top - bottom) - margin_y * 2)
+        scale = min(available_w / content_w, available_h / content_h) * 0.97
+        self.hero_map_scale = scale
+        self.hero_map_canvas.setScale(scale, 1, scale)
+        target_x = left + margin_x + available_w * 0.5 - content_cx * scale
+        target_z = bottom + margin_y + available_h * 0.5 - content_cz * scale
+        self.hero_map_canvas.setPos(target_x, 0, target_z)
+
+    def _world_pos_to_hero_map_pos(self, world_pos: Vec3) -> Vec3:
+        best_room = None
+        best_meta = None
+        best_score = None
+        for room in self.hero_map_dungeon.rooms:
+            mapping = self.hero_map_room_to_module.get(room)
+            if not mapping:
+                continue
+            node = mapping["node"]
+            meta = mapping["meta"]
+            left, right, _bottom, _top = self._module_world_bounds(node, meta)
+            width = max(0.01, right - left)
+            score = 0.0 if left <= world_pos.x <= right else min(abs(world_pos.x - left), abs(world_pos.x - right))
+            if best_score is None or score < best_score:
+                best_room = room
+                best_meta = (left, width)
+                best_score = score
+        if best_room is not None and best_meta is not None:
+            left, width = best_meta
+            local_t = max(0.0, min(1.0, (world_pos.x - left) / width))
+            editor_x = best_room.model.getX() - self.hero_map_room_half_w + local_t * (self.hero_map_room_half_w * 2.0)
+            return Vec3(editor_x, -0.02, best_room.model.getZ() + 0.02)
+        return Vec3(0, -0.02, 0.02)
+
+    def _update_hero_map_player_icon(self):
+        icon = getattr(self, "hero_map_player_icon", None)
+        if icon is None:
+            return
+        glow = getattr(self, "hero_map_player_glow", None)
+        marker = getattr(self, "hero_map_player_marker", None)
+        if not self.hero_map_enabled or self.player_id != 0 or self.hero is None:
+            icon.hide()
+            if glow is not None:
+                glow.hide()
+            if marker is not None:
+                marker.hide()
+            return
+        hero_map_pos = self._world_pos_to_hero_map_pos(self.hero.np.getPos(self.render))
+        canvas_pos = self.hero_map_canvas.getPos(self.hero_map_root)
+        root_x = canvas_pos.x + hero_map_pos.x * self.hero_map_scale
+        root_z = canvas_pos.z + hero_map_pos.z * self.hero_map_scale
+        pulse = 0.5 + 0.5 * math.sin(self._ui_pulse_time * 5.4)
+        base_scale = 0.062 if self.hero_map_expanded else 0.042
+        left, right, bottom, top = self.hero_map_frame
+        edge_pad = base_scale * 1.05
+        root_x = max(left + edge_pad, min(right - edge_pad, root_x))
+        root_z = max(bottom + edge_pad, min(top - edge_pad, root_z))
+        icon.setScale(base_scale, 1, base_scale)
+        icon.setPos(root_x, 0, root_z)
+        icon.show()
+        if marker is not None:
+            marker_size = base_scale * 0.46
+            marker["frameSize"] = (-marker_size, marker_size, -marker_size, marker_size)
+            marker.setPos(root_x, 0, root_z)
+            marker.show()
+        if glow is not None:
+            glow_size = base_scale * (0.78 + pulse * 0.32)
+            glow["frameSize"] = (-glow_size, glow_size, -glow_size, glow_size)
+            glow["frameColor"] = (1.0, 0.72, 0.24, 0.13 + pulse * 0.11)
+            glow.setPos(root_x, 0, root_z)
+            glow.show()
 
     def _apply_boss_editor_layout(self, force: bool = False):
         aspect = round(float(self.getAspectRatio()), 3)
@@ -435,39 +1182,48 @@ class Game(ShowBase):
         if self.editor_expanded:
             margin_x = 0.12
             self.editor_frame = (-aspect + margin_x, aspect - margin_x, -0.86, 0.86)
-            self.editor_root["frameColor"] = (0.006, 0.009, 0.012, 0.92)
+            self.editor_root["frameColor"] = self.ui_palette["void"]
             self.editor_root["frameSize"] = self.editor_frame
             self.editor_root.setPos(0, 0, 0)
             self.editor_title.setScale(0.052)
-            self.editor_title.setPos(0, 0.75)
+            self.editor_title.setPos(self.editor_frame[0] + 0.11, 0.755)
+            self.editor_subtitle.setScale(0.026)
+            self.editor_subtitle.setPos(self.editor_frame[0] + 0.112, 0.695)
             self.editor_key_badge["frameSize"] = (-0.046, 0.046, -0.032, 0.032)
             self.editor_key_badge.setPos(self.editor_frame[1] - 0.12, 0, 0.76)
             self.editor_mode_label.setScale(0.034)
             self.editor_mode_label.setPos(0, -0.012)
         else:
-            self.editor_frame = (-0.34, 0.34, -0.23, 0.23)
-            self.editor_root["frameColor"] = (0.015, 0.02, 0.025, 0.82)
+            self.editor_frame = (-0.39, 0.39, -0.265, 0.265)
+            self.editor_root["frameColor"] = self.ui_palette["panel"]
             self.editor_root["frameSize"] = self.editor_frame
-            self.editor_root.setPos(aspect - 0.40, 0, 0.71)
-            self.editor_title.setScale(0.032)
-            self.editor_title.setPos(0, 0.16)
-            self.editor_key_badge["frameSize"] = (-0.035, 0.035, -0.024, 0.024)
-            self.editor_key_badge.setPos(0.29, 0, 0.164)
+            self.editor_root.setPos(aspect - 0.47, 0, 0.65)
+            self.editor_title.setScale(0.034)
+            self.editor_title.setPos(-0.335, 0.172)
+            self.editor_subtitle.setScale(0.018)
+            self.editor_subtitle.setPos(-0.335, 0.128)
+            self.editor_key_badge["frameSize"] = (-0.04, 0.04, -0.026, 0.026)
+            self.editor_key_badge.setPos(0.315, 0, 0.175)
             self.editor_mode_label.setScale(0.026)
-            self.editor_mode_label.setPos(0, -0.008)
+            self.editor_mode_label.setPos(0, -0.009)
 
         left, right, bottom, top = self.editor_frame
-        inset = 0.012 if self.editor_expanded else 0.014
-        self.editor_border["frameSize"] = (left, right, bottom, top)
+        inset = 0.026 if self.editor_expanded else 0.018
+        self.editor_shadow["frameSize"] = self._expand_frame(self.editor_frame, 0.018)
+        self.editor_border["frameSize"] = self._expand_frame(self.editor_frame, 0.006)
         self.editor_backdrop["frameSize"] = (left + inset, right - inset, bottom + inset, top - inset)
+        header_h = 0.14 if self.editor_expanded else 0.09
+        self.editor_header["frameSize"] = (left + inset, right - inset, top - header_h, top - inset)
+        self.editor_vignette_top["frameSize"] = (left + inset, right - inset, top - header_h - 0.035, top - header_h)
+        self.editor_vignette_bottom["frameSize"] = (left + inset, right - inset, bottom + inset, bottom + inset + 0.052)
         self._rebuild_boss_editor_grid()
         self._fit_editor_canvas()
 
     def _rebuild_boss_editor_grid(self):
         self.editor_grid.node().removeAllChildren()
         left, right, bottom, top = self.editor_frame
-        line_color = (0.45, 0.62, 0.65, 0.16) if self.editor_expanded else (0.45, 0.62, 0.65, 0.11)
-        line_count = 8 if self.editor_expanded else 4
+        line_color = (0.78, 0.61, 0.34, 0.13) if self.editor_expanded else (0.78, 0.61, 0.34, 0.09)
+        line_count = 10 if self.editor_expanded else 5
         thickness = 0.003 if self.editor_expanded else 0.0025
 
         for i in range(1, line_count):
@@ -494,6 +1250,18 @@ class Game(ShowBase):
             self._boss_editor_release()
         self.editor_expanded = not self.editor_expanded
         self._apply_boss_editor_layout(force=True)
+
+    def _toggle_hero_map_fullscreen(self):
+        if self.player_id != 0 or not self.hero_map_enabled:
+            return
+        self.hero_map_expanded = not self.hero_map_expanded
+        self._apply_hero_map_layout(force=True)
+
+    def _toggle_map_fullscreen(self):
+        if self.player_id == 1:
+            self._toggle_boss_editor_fullscreen()
+        elif self.player_id == 0:
+            self._toggle_hero_map_fullscreen()
 
     def _get_boss_editor_texture(self, meta: dict):
         texture_path = self._get_boss_editor_texture_path(meta)
@@ -576,12 +1344,12 @@ class Game(ShowBase):
         content_cz = (min_z + max_z) * 0.5
 
         left, right, bottom, top = self.editor_frame
-        margin_x = 0.24 if self.editor_expanded else 0.06
-        margin_y = 0.28 if self.editor_expanded else 0.08
+        margin_x = 0.18 if self.editor_expanded else 0.055
+        margin_y = 0.23 if self.editor_expanded else 0.075
         available_w = max(0.01, (right - left) - margin_x * 2)
         available_h = max(0.01, (top - bottom) - margin_y * 2)
 
-        scale = min(available_w / content_w, available_h / content_h) * 0.92
+        scale = min(available_w / content_w, available_h / content_h) * 0.97
         self.editor_scale = scale
         self.editor_canvas.setScale(scale, 1, scale)
 
@@ -639,17 +1407,40 @@ class Game(ShowBase):
         icon = getattr(self, "editor_player_icon", None)
         if icon is None:
             return
+        glow = getattr(self, "editor_player_glow", None)
+        marker = getattr(self, "editor_player_marker", None)
         hero = getattr(self, "hero", None)
         if not self.editor_enabled or self.player_id != 1 or hero is None:
             icon.hide()
+            if glow is not None:
+                glow.hide()
+            if marker is not None:
+                marker.hide()
             return
         editor_pos = self._world_pos_to_editor_pos(hero.np.getPos(self.render))
         canvas_pos = self.editor_canvas.getPos(self.editor_root)
         root_x = canvas_pos.x + editor_pos.x * self.editor_scale
         root_z = canvas_pos.z + editor_pos.z * self.editor_scale
-        icon.setScale(0.06 if self.editor_expanded else 0.035)
+        base_scale = 0.062 if self.editor_expanded else 0.042
+        pulse = 0.5 + 0.5 * math.sin(self._ui_pulse_time * 5.4)
+        left, right, bottom, top = self.editor_frame
+        edge_pad = base_scale * 1.05
+        root_x = max(left + edge_pad, min(right - edge_pad, root_x))
+        root_z = max(bottom + edge_pad, min(top - edge_pad, root_z))
+        icon.setScale(base_scale, 1, base_scale)
         icon.setPos(root_x, 0, root_z)
         icon.show()
+        if marker is not None:
+            marker_size = base_scale * 0.46
+            marker["frameSize"] = (-marker_size, marker_size, -marker_size, marker_size)
+            marker.setPos(root_x, 0, root_z)
+            marker.show()
+        if glow is not None:
+            glow_size = base_scale * (0.78 + pulse * 0.32)
+            glow["frameSize"] = (-glow_size, glow_size, -glow_size, glow_size)
+            glow["frameColor"] = (1.0, 0.72, 0.24, 0.13 + pulse * 0.11)
+            glow.setPos(root_x, 0, root_z)
+            glow.show()
 
     def _boss_editor_handle_click(self) -> bool:
         if (
@@ -684,7 +1475,7 @@ class Game(ShowBase):
         self._boss_editor_handle_click()
 
     def _on_editor_tab_press(self, _event=None):
-        self._toggle_boss_editor_fullscreen()
+        self._toggle_map_fullscreen()
 
     def _is_mouse_over_editor(self) -> bool:
         if not self.editor_enabled or self.editor_root.isHidden() or not self.editor_expanded:
@@ -733,7 +1524,7 @@ class Game(ShowBase):
                 if not corridor or id(corridor) in seen:
                     continue
                 seen.add(id(corridor))
-                corridor.setColor(1.0, 0.82, 0.35, 0.75)
+                corridor.setColor(0.96, 0.70, 0.28, 0.72)
                 corridor.setTransparency(TransparencyAttrib.MAlpha)
 
     def _editor_has_links(self) -> bool:
@@ -820,6 +1611,7 @@ class Game(ShowBase):
         self.world.recompute_bounds()
         self.min_x, self.max_x = self.world.setLimit()
         self.goal_x = self.max_x - 2.0
+        self._sync_hero_map_from_world()
 
     def _module_world_bounds(self, node, meta: dict) -> tuple[float, float, float, float]:
         min_bound = meta.get("min_bound")
@@ -1164,11 +1956,11 @@ class Game(ShowBase):
         return task.cont
 
     def _setup_hud(self):
-        panel_color = (0.05, 0.07, 0.1, 0.65)
-        panel_dark = (0.02, 0.03, 0.05, 0.85)
-        text_main = (0.92, 0.96, 1.0, 0.95)
-        text_sub = (0.72, 0.78, 0.86, 0.9)
-        accent = (0.45, 0.85, 1.0, 0.95)
+        panel_color = self.ui_palette["panel"]
+        panel_dark = self.ui_palette["track"]
+        text_main = self.ui_palette["text"]
+        text_sub = self.ui_palette["text_dim"]
+        accent = self.ui_palette["gold"]
 
         self.ui_root = DirectFrame(
             parent=self.aspect2d,
@@ -1183,7 +1975,7 @@ class Game(ShowBase):
             pos=(-1.32, 0, 0.93),
         )
         self.left_panel.setTransparency(TransparencyAttrib.MAlpha)
-        self.role_label = OnscreenText(
+        self.role_label = self._make_ui_text(
             text="Connecting...",
             pos=(0.03, -0.06),
             align=TextNode.ALeft,
@@ -1193,7 +1985,7 @@ class Game(ShowBase):
             mayChange=True,
             parent=self.left_panel,
         )
-        self.objective_label = OnscreenText(
+        self.objective_label = self._make_ui_text(
             text="Waiting for role assignment.",
             pos=(0.03, -0.13),
             align=TextNode.ALeft,
@@ -1203,7 +1995,7 @@ class Game(ShowBase):
             mayChange=True,
             parent=self.left_panel,
         )
-        self.phase_label = OnscreenText(
+        self.phase_label = self._make_ui_text(
             text="",
             pos=(0.03, -0.2),
             align=TextNode.ALeft,
@@ -1221,7 +2013,7 @@ class Game(ShowBase):
             pos=(1.32, 0, 0.93),
         )
         self.right_panel.setTransparency(TransparencyAttrib.MAlpha)
-        self.hero_label = OnscreenText(
+        self.hero_label = self._make_ui_text(
             text="HERO",
             pos=(-0.6, -0.05),
             align=TextNode.ALeft,
@@ -1241,7 +2033,7 @@ class Game(ShowBase):
             pos=(-0.6, 0, -0.095),
             parent=self.right_panel,
         )
-        self.hero_hp_text = OnscreenText(
+        self.hero_hp_text = self._make_ui_text(
             text=f"{HERO_MAX_HP}/{HERO_MAX_HP}",
             pos=(0.26, -0.01),
             align=TextNode.ACenter,
@@ -1251,7 +2043,7 @@ class Game(ShowBase):
             mayChange=True,
             parent=self.hero_bar,
         )
-        self.boss_label = OnscreenText(
+        self.boss_label = self._make_ui_text(
             text="BOSS",
             pos=(-0.6, -0.135),
             align=TextNode.ALeft,
@@ -1271,7 +2063,7 @@ class Game(ShowBase):
             pos=(-0.6, 0, -0.175),
             parent=self.right_panel,
         )
-        self.boss_hp_text = OnscreenText(
+        self.boss_hp_text = self._make_ui_text(
             text=f"{BOSS_MAX_HP}/{BOSS_MAX_HP}",
             pos=(0.26, -0.01),
             align=TextNode.ACenter,
@@ -1281,8 +2073,8 @@ class Game(ShowBase):
             mayChange=True,
             parent=self.boss_bar,
         )
-        self.mob_count_text = OnscreenText(
-            text=f"Mobs: 0/{MAX_ACTIVE_MOBS}",
+        self.mob_count_text = self._make_ui_text(
+            text=f"Summons 0/{MAX_ACTIVE_MOBS}",
             pos=(-0.6, -0.215),
             align=TextNode.ALeft,
             scale=0.034,
@@ -1299,8 +2091,8 @@ class Game(ShowBase):
             pos=(0, 0, -0.88),
         )
         self.action_panel.setTransparency(TransparencyAttrib.MAlpha)
-        self.control_text = OnscreenText(
-            text="Control: --",
+        self.control_text = self._make_ui_text(
+            text="Command --",
             pos=(-0.66, -0.04),
             align=TextNode.ALeft,
             scale=0.038,
@@ -1309,8 +2101,8 @@ class Game(ShowBase):
             mayChange=True,
             parent=self.action_panel,
         )
-        self.combo_text = OnscreenText(
-            text="Combo 0",
+        self.combo_text = self._make_ui_text(
+            text="Chain 0",
             pos=(0.66, -0.04),
             align=TextNode.ARight,
             scale=0.038,
@@ -1329,8 +2121,8 @@ class Game(ShowBase):
             pos=(-0.62, 0, -0.085),
             parent=self.action_panel,
         )
-        self.attack_text = OnscreenText(
-            text="Attack Ready",
+        self.attack_text = self._make_ui_text(
+            text="Strike Ready",
             pos=(0.62, -0.01),
             align=TextNode.ACenter,
             scale=0.034,
@@ -1349,8 +2141,8 @@ class Game(ShowBase):
             pos=(-0.62, 0, -0.125),
             parent=self.action_panel,
         )
-        self.spawn_text = OnscreenText(
-            text="Spawn Ready",
+        self.spawn_text = self._make_ui_text(
+            text="Summon Ready",
             pos=(0.62, -0.01),
             align=TextNode.ACenter,
             scale=0.032,
@@ -1362,19 +2154,19 @@ class Game(ShowBase):
         self.spawn_bar.hide()
         self.spawn_text.hide()
 
-        self.status_panel = DirectFrame(
-            parent=self.ui_root,
-            frameColor=panel_color,
-            frameSize=(-0.6, 0.6, -0.06, 0),
-            pos=(0, 0, 0.98),
+        self.status_panel = self._make_fantasy_panel(
+            self.ui_root,
+            (-0.52, 0.52, -0.07, 0.012),
+            (0, 0, 0.965),
+            name="status",
+            frame_color=(0.018, 0.018, 0.021, 0.72),
         )
-        self.status_panel.setTransparency(TransparencyAttrib.MAlpha)
-        self.status_text = OnscreenText(
+        self.status_text = self._make_ui_text(
             text="",
-            pos=(0, -0.04),
+            pos=(0, -0.046),
             align=TextNode.ACenter,
-            scale=0.045,
-            fg=text_main,
+            scale=0.038,
+            fg=self.ui_palette["text"],
             shadow=(0, 0, 0, 0.9),
             mayChange=True,
             parent=self.status_panel,
@@ -1385,191 +2177,155 @@ class Game(ShowBase):
         self._setup_boss_inventory_ui()
 
     def _setup_hero_ui(self):
-        self.hero_ui_root = DirectFrame(
-            parent=self.aspect2d,
-            frameColor=(0, 0, 0, 0),
-        )
+        palette = self.ui_palette
+        self.hero_ui_root = DirectFrame(parent=self.aspect2d, frameColor=(0, 0, 0, 0))
         self.hero_ui_root.setTransparency(TransparencyAttrib.MAlpha)
 
         self.hero_bars_root = DirectFrame(
             parent=self.hero_ui_root,
             frameColor=(0, 0, 0, 0),
-            pos=(-1.28, 0, 0.93),
+            pos=(-1.55, 0, 0.88),
         )
+        self.hero_bars_root.setTransparency(TransparencyAttrib.MAlpha)
 
-        bar_width = 0.58
-        bar_height = 0.035
-        bar_shadow = (0.0, 0.0, 0.0, 0.35)
-
-        def make_bar(name: str, y: float, x: float, color: tuple[float, float, float, float], label: str):
-            bg = DirectFrame(
-                parent=self.hero_bars_root,
-                frameColor=bar_shadow,
-                frameSize=(0, bar_width, -bar_height, 0),
-                pos=(x, 0, y),
-            )
-            bg.setTransparency(TransparencyAttrib.MAlpha)
-            bar = DirectWaitBar(
-                parent=bg,
-                text="",
-                range=1.0,
-                value=1.0,
-                frameColor=(0, 0, 0, 0),
-                barColor=color,
-                frameSize=(0, bar_width, -bar_height, 0),
-                pos=(0, 0, 0),
-            )
-            label_text = OnscreenText(
-                text=f"{label}",
-                pos=(bar_width + 0.08, -bar_height * 0.7),
-                align=TextNode.ALeft,
-                scale=0.038,
-                fg=(0.95, 0.95, 0.95, 0.92),
-                shadow=(0, 0, 0, 0.85),
-                mayChange=True,
-                parent=bg,
-            )
-            return bar, label_text
-
-        self.hero_pv_bar, self.hero_pv_label = make_bar(
-            "pv",
-            y=0.0,
-            x=0.0,
-            color=(0.86, 0.22, 0.2, 0.95),
-            label="PV",
+        self.hero_vital_panel = self._make_fantasy_panel(
+            self.hero_bars_root,
+            (-0.11, 0.82, -0.230, 0.180),
+            (0, 0, -0.095),
+            name="hero_vital",
         )
-        self.hero_pm_bar, self.hero_pm_label = make_bar(
-            "pm",
-            y=-0.055,
-            x=0.02,
-            color=(0.32, 0.62, 0.9, 0.95),
-            label="PM",
-        )
-        self.hero_endurance_bar, self.hero_endurance_label = make_bar(
-            "endurance",
-            y=-0.11,
-            x=0.04,
-            color=(0.35, 0.75, 0.35, 0.95),
-            label="ENDURANCE",
-        )
-
-        self.hero_objective_text = OnscreenText(
-            text="",
-            pos=(-1.26, 0.74),
+        self.hero_title = self._make_ui_text(
+            text="HERO",
+            pos=(0.03, 0.112),
             align=TextNode.ALeft,
             scale=0.038,
-            fg=(0.9, 0.92, 0.95, 0.9),
-            shadow=(0, 0, 0, 0.8),
+            fg=palette["text"],
+            shadow=(0, 0, 0, 0.86),
             mayChange=True,
-            parent=self.hero_ui_root,
+            parent=self.hero_vital_panel,
+        )
+        self.hero_power_text = self._make_ui_text(
+            text="POWER 0",
+            pos=(0.75, 0.11),
+            align=TextNode.ARight,
+            scale=0.026,
+            fg=palette["gold"],
+            shadow=(0, 0, 0, 0.86),
+            mayChange=True,
+            parent=self.hero_vital_panel,
         )
 
-        self.hero_bottom_root = DirectFrame(
-            parent=self.hero_ui_root,
-            frameColor=(0, 0, 0, 0),
-            pos=(-1.26, 0, -0.76),
+        self.hero_pv_parts = self._make_framed_bar(
+            self.hero_vital_panel,
+            pos=(0.08, 0, 0.052),
+            width=0.64,
+            height=0.046,
+            label="HP",
+            icon="HP",
+            bar_color=palette["hp"],
+            trail_color=(0.52, 0.10, 0.065, 0.78),
         )
+        self.hero_pv_bar = self.hero_pv_parts["bar"]
+        self.hero_pv_trail = self.hero_pv_parts["trail"]
+        self.hero_pv_flash = self.hero_pv_parts["flash"]
+        self.hero_pv_label = self.hero_pv_parts["label"]
+        self.hero_pv_text = self.hero_pv_parts["text"]
 
-        self.hero_capacity_label = OnscreenText(
-            text="SYMBOLE DE CAPACITE",
-            pos=(0.02, 0.14),
-            align=TextNode.ALeft,
-            scale=0.032,
-            fg=(0.9, 0.9, 0.9, 0.9),
-            shadow=(0, 0, 0, 0.8),
-            mayChange=True,
-            parent=self.hero_bottom_root,
+        self.hero_pm_parts = self._make_framed_bar(
+            self.hero_vital_panel,
+            pos=(0.08, 0, -0.040),
+            width=0.64,
+            height=0.038,
+            label="MANA",
+            icon="MP",
+            bar_color=palette["mana"],
+            trail_color=palette["mana_dark"],
         )
-        self.hero_capacity_outer = DirectFrame(
-            parent=self.hero_bottom_root,
-            frameColor=(0.9, 0.9, 0.9, 0.15),
-            frameSize=(-0.085, 0.085, -0.085, 0.085),
-            pos=(0.08, 0, 0.0),
-        )
-        self.hero_capacity_outer.setTransparency(TransparencyAttrib.MAlpha)
-        self.hero_capacity_inner = DirectFrame(
-            parent=self.hero_capacity_outer,
-            frameColor=(0.05, 0.05, 0.05, 0.7),
-            frameSize=(-0.075, 0.075, -0.075, 0.075),
-            pos=(0, 0, 0),
-        )
-        self.hero_capacity_inner.setTransparency(TransparencyAttrib.MAlpha)
-        self.hero_capacity_icon = OnscreenText(
-            text="*",
-            pos=(0, -0.03),
-            align=TextNode.ACenter,
-            scale=0.08,
-            fg=(0.95, 0.95, 0.95, 0.9),
-            shadow=(0, 0, 0, 0.8),
-            mayChange=True,
-            parent=self.hero_capacity_inner,
-        )
+        self.hero_pm_bar = self.hero_pm_parts["bar"]
+        self.hero_pm_trail = self.hero_pm_parts["trail"]
+        self.hero_pm_flash = self.hero_pm_parts["flash"]
+        self.hero_pm_label = self.hero_pm_parts["label"]
+        self.hero_pm_text = self.hero_pm_parts["text"]
 
-        self.hero_items_label = OnscreenText(
-            text="OBJETS OBTENUS",
-            pos=(0.32, 0.03),
-            align=TextNode.ALeft,
-            scale=0.032,
-            fg=(0.9, 0.9, 0.9, 0.9),
-            shadow=(0, 0, 0, 0.8),
-            mayChange=True,
-            parent=self.hero_bottom_root,
+        self.hero_endurance_parts = self._make_framed_bar(
+            self.hero_vital_panel,
+            pos=(0.08, 0, -0.125),
+            width=0.64,
+            height=0.034,
+            label="POISE",
+            icon="ST",
+            bar_color=palette["stamina"],
+            trail_color=(0.11, 0.24, 0.12, 0.84),
         )
-        self.hero_item_slots_root = DirectFrame(
-            parent=self.hero_bottom_root,
-            frameColor=(0, 0, 0, 0),
-            pos=(0.32, 0, -0.06),
-        )
-        self.hero_item_slots: list[DirectFrame] = []
-        for i in range(4):
-            slot = DirectFrame(
-                parent=self.hero_item_slots_root,
-                frameColor=(0.08, 0.08, 0.08, 0.7),
-                frameSize=(0, 0.08, -0.08, 0),
-                pos=(i * 0.095, 0, 0),
-            )
-            slot.setTransparency(TransparencyAttrib.MAlpha)
-            self.hero_item_slots.append(slot)
+        self.hero_endurance_bar = self.hero_endurance_parts["bar"]
+        self.hero_endurance_trail = self.hero_endurance_parts["trail"]
+        self.hero_endurance_flash = self.hero_endurance_parts["flash"]
+        self.hero_endurance_label = self.hero_endurance_parts["label"]
+        self.hero_endurance_text = self.hero_endurance_parts["text"]
 
         self.hero_ui_root.hide()
 
     def _setup_boss_ui(self):
-        self.boss_ui_root = DirectFrame(
-            parent=self.aspect2d,
-            frameColor=(0, 0, 0, 0),
-        )
+        palette = self.ui_palette
+        self.boss_ui_root = DirectFrame(parent=self.aspect2d, frameColor=(0, 0, 0, 0))
         self.boss_ui_root.setTransparency(TransparencyAttrib.MAlpha)
 
         self.boss_control_root = DirectFrame(
             parent=self.boss_ui_root,
             frameColor=(0, 0, 0, 0),
-            pos=(-1.18, 0, 0.9),
+            pos=(-1.55, 0, 0.84),
         )
 
-        self.boss_control_icon_outer = DirectFrame(
-            parent=self.boss_control_root,
-            frameColor=(0.95, 0.88, 0.66, 0.86),
-            frameSize=(-0.09, 0.09, -0.09, 0.09),
-            pos=(0, 0, 0),
+        self.boss_command_panel = self._make_fantasy_panel(
+            self.boss_control_root,
+            (-0.13, 0.88, -0.19, 0.145),
+            (0, 0, 0),
+            name="boss_command",
         )
-        self.boss_control_icon_outer.setTransparency(TransparencyAttrib.MAlpha)
+        self.boss_command_title = self._make_ui_text(
+            text="COMMAND",
+            pos=(0.155, 0.104),
+            align=TextNode.ALeft,
+            scale=0.025,
+            fg=palette["text_dim"],
+            shadow=(0, 0, 0, 0.86),
+            mayChange=False,
+            parent=self.boss_command_panel,
+        )
+
+        self.boss_control_icon_outer = self._make_ui_frame(
+            self.boss_command_panel,
+            palette["gold_dim"],
+            (-0.096, 0.096, -0.096, 0.096),
+            pos=(0, 0, -0.015),
+        )
         self.boss_control_icon_outer.bind(DGG.B1PRESS, self._on_boss_control_slot_press, ["boss"])
 
-        self.boss_control_icon_inner = DirectFrame(
+        self.boss_control_icon_glow = self._make_ui_frame(
             parent=self.boss_control_icon_outer,
-            frameColor=(0.045, 0.055, 0.065, 0.92),
-            frameSize=(-0.074, 0.074, -0.074, 0.074),
-            pos=(0, 0, 0),
+            frame_color=palette["gold_soft"],
+            frame_size=(-0.088, 0.088, -0.088, 0.088),
         )
-        self.boss_control_icon_inner.setTransparency(TransparencyAttrib.MAlpha)
+        self.boss_control_icon_inner = self._make_ui_frame(
+            parent=self.boss_control_icon_outer,
+            frame_color=palette["track"],
+            frame_size=(-0.076, 0.076, -0.076, 0.076),
+        )
         self.boss_control_icon_inner.bind(DGG.B1PRESS, self._on_boss_control_slot_press, ["boss"])
+        self.boss_control_cooldown = self._make_ui_frame(
+            parent=self.boss_control_icon_inner,
+            frame_color=palette["cooldown"],
+            frame_size=(-0.076, 0.076, -0.076, 0.076),
+        )
+        self.boss_control_cooldown.setBin("fixed", 80)
+        self.boss_control_cooldown.hide()
 
-        self.boss_control_icon_text = OnscreenText(
+        self.boss_control_icon_text = self._make_ui_text(
             text="B",
             pos=(0, -0.032),
             align=TextNode.ACenter,
-            scale=0.072,
-            fg=(1.0, 0.86, 0.38, 0.98),
+            scale=0.074,
+            fg=palette["gold"],
             shadow=(0, 0, 0, 0.9),
             mayChange=True,
             parent=self.boss_control_icon_inner,
@@ -1578,134 +2334,143 @@ class Game(ShowBase):
             image=MOB_ICON_PATH,
             parent=self.boss_control_icon_inner,
             pos=(0, 0, 0),
-            scale=(0.055, 1, 0.055),
+            scale=(0.059, 1, 0.059),
         )
         self.boss_control_mob_image.setTransparency(TransparencyAttrib.MAlpha)
         self.boss_control_mob_image.hide()
 
-        bar_width = 0.68
-        bar_height = 0.036
-        bar_bg = (0.0, 0.0, 0.0, 0.42)
-
-        def make_boss_bar(y: float, x: float, color: tuple[float, float, float, float], label: str):
-            bg = DirectFrame(
-                parent=self.boss_control_root,
-                frameColor=bar_bg,
-                frameSize=(0, bar_width, -bar_height, 0),
-                pos=(x, 0, y),
-            )
-            bg.setTransparency(TransparencyAttrib.MAlpha)
-            bar = DirectWaitBar(
-                parent=bg,
-                text="",
-                range=1.0,
-                value=1.0,
-                frameColor=(0, 0, 0, 0),
-                barColor=color,
-                frameSize=(0, bar_width, -bar_height, 0),
-                pos=(0, 0, 0),
-            )
-            label_text = OnscreenText(
-                text=label,
-                pos=(bar_width + 0.06, -bar_height * 0.72),
-                align=TextNode.ALeft,
-                scale=0.04,
-                fg=(0.94, 0.96, 1.0, 0.94),
-                shadow=(0, 0, 0, 0.86),
-                mayChange=True,
-                parent=bg,
-            )
-            value_text = OnscreenText(
-                text="",
-                pos=(bar_width * 0.5, -bar_height * 0.72),
-                align=TextNode.ACenter,
-                scale=0.028,
-                fg=(0.98, 0.98, 0.95, 0.92),
-                shadow=(0, 0, 0, 0.86),
-                mayChange=True,
-                parent=bg,
-            )
-            return bar, label_text, value_text
-
-        self.boss_pv_bar, self.boss_pv_label, self.boss_pv_text = make_boss_bar(
-            y=0.04,
-            x=0.105,
-            color=(0.92, 0.16, 0.16, 0.96),
-            label="PV",
+        self.boss_pv_parts = self._make_framed_bar(
+            self.boss_command_panel,
+            pos=(0.17, 0, 0.053),
+            width=0.62,
+            height=0.044,
+            label="VITALITY",
+            icon="HP",
+            bar_color=palette["hp"],
+            trail_color=(0.52, 0.10, 0.065, 0.78),
         )
-        self.boss_pm_bar, self.boss_pm_label, self.boss_pm_text = make_boss_bar(
-            y=-0.014,
-            x=0.13,
-            color=(0.12, 0.62, 0.92, 0.94),
-            label="PM",
-        )
+        self.boss_pv_bar = self.boss_pv_parts["bar"]
+        self.boss_pv_trail = self.boss_pv_parts["trail"]
+        self.boss_pv_flash = self.boss_pv_parts["flash"]
+        self.boss_pv_label = self.boss_pv_parts["label"]
+        self.boss_pv_text = self.boss_pv_parts["text"]
 
-        self.boss_control_name = OnscreenText(
+        self.boss_pm_parts = self._make_framed_bar(
+            self.boss_command_panel,
+            pos=(0.17, 0, -0.037),
+            width=0.62,
+            height=0.044,
+            label="MANA",
+            icon="MP",
+            bar_color=palette["mana"],
+            trail_color=palette["mana_dark"],
+        )
+        self.boss_pm_bar = self.boss_pm_parts["bar"]
+        self.boss_pm_trail = self.boss_pm_parts["trail"]
+        self.boss_pm_flash = self.boss_pm_parts["flash"]
+        self.boss_pm_label = self.boss_pm_parts["label"]
+        self.boss_pm_text = self.boss_pm_parts["text"]
+
+        self.boss_control_name = self._make_ui_text(
             text="BOSS",
-            pos=(-0.08, -0.125),
+            pos=(0.155, -0.135),
             align=TextNode.ALeft,
-            scale=0.034,
-            fg=(0.9, 0.92, 0.95, 0.9),
+            scale=0.029,
+            fg=palette["text"],
             shadow=(0, 0, 0, 0.82),
             mayChange=True,
-            parent=self.boss_control_root,
+            parent=self.boss_command_panel,
         )
 
-        self.boss_spawn_text = OnscreenText(
+        self.boss_spawn_text = self._make_ui_text(
             text="",
-            pos=(0.28, -0.125),
-            align=TextNode.ALeft,
-            scale=0.032,
-            fg=(1.0, 0.8, 0.42, 0.94),
+            pos=(0.79, -0.135),
+            align=TextNode.ARight,
+            scale=0.027,
+            fg=palette["gold"],
             shadow=(0, 0, 0, 0.82),
             mayChange=True,
-            parent=self.boss_control_root,
+            parent=self.boss_command_panel,
         )
 
-        self.boss_mob_slots_root = DirectFrame(
-            parent=self.boss_ui_root,
-            frameColor=(0, 0, 0, 0),
-            pos=(-0.48, 0, -0.76),
-        )
+        self.boss_mob_slots_root = DirectFrame(parent=self.boss_ui_root, frameColor=(0, 0, 0, 0), pos=(-0.48, 0, -0.78))
+        self.boss_mob_slots_root.setTransparency(TransparencyAttrib.MAlpha)
 
         self.boss_mob_slots: list[dict[str, Any]] = []
-        slot_size = 0.085
-        slot_gap = 0.105
+        self.boss_slot_size = 0.108
+        self.boss_slot_gap = 0.132
+        slot_size = self.boss_slot_size
+        slot_gap = self.boss_slot_gap
+        rarity_cycle = ["common", "uncommon", "rare", "epic", "legendary", "rare"]
         for i in range(MAX_ACTIVE_MOBS):
-            slot_root = DirectFrame(
+            slot_root = self._make_ui_frame(
                 parent=self.boss_mob_slots_root,
-                frameColor=(0, 0, 0, 0),
-                frameSize=(-0.005, slot_size + 0.005, -0.12, 0.015),
+                frame_color=(0, 0, 0, 0),
+                frame_size=(-0.012, slot_size + 0.012, -0.153, 0.027),
                 pos=(i * slot_gap, 0, 0),
             )
-            slot_root.setTransparency(TransparencyAttrib.MAlpha)
             slot_root.bind(DGG.B1PRESS, self._on_boss_control_slot_press, [i + 1])
 
-            slot_frame = DirectFrame(
+            slot_shadow = self._make_ui_frame(
                 parent=slot_root,
-                frameColor=(0.9, 0.86, 0.72, 0.72),
-                frameSize=(0, slot_size, -slot_size, 0),
-                pos=(0, 0, 0),
+                frame_color=palette["shadow"],
+                frame_size=(-0.006, slot_size + 0.006, -slot_size - 0.006, 0.006),
+                pos=(0.01, 0, -0.012),
             )
-            slot_frame.setTransparency(TransparencyAttrib.MAlpha)
+            slot_glow = self._make_ui_frame(
+                parent=slot_root,
+                frame_color=(1.0, 0.74, 0.28, 0.0),
+                frame_size=(-0.01, slot_size + 0.01, -slot_size - 0.01, 0.01),
+            )
+            slot_frame = self._make_ui_frame(
+                parent=slot_root,
+                frame_color=palette["gold_dim"],
+                frame_size=(0, slot_size, -slot_size, 0),
+            )
             slot_frame.bind(DGG.B1PRESS, self._on_boss_control_slot_press, [i + 1])
 
-            slot_inner = DirectFrame(
+            slot_inner = self._make_ui_frame(
                 parent=slot_frame,
-                frameColor=(0.04, 0.05, 0.06, 0.9),
-                frameSize=(0.008, slot_size - 0.008, -slot_size + 0.008, -0.008),
-                pos=(0, 0, 0),
+                frame_color=palette["track"],
+                frame_size=(0.01, slot_size - 0.01, -slot_size + 0.01, -0.01),
             )
-            slot_inner.setTransparency(TransparencyAttrib.MAlpha)
             slot_inner.bind(DGG.B1PRESS, self._on_boss_control_slot_press, [i + 1])
+            slot_highlight = self._make_ui_frame(
+                parent=slot_inner,
+                frame_color=(1.0, 0.94, 0.70, 0.08),
+                frame_size=(0.018, slot_size - 0.018, -slot_size * 0.38, -0.018),
+            )
+            slot_cooldown = self._make_ui_frame(
+                parent=slot_inner,
+                frame_color=palette["cooldown"],
+                frame_size=(0.01, slot_size - 0.01, -slot_size + 0.01, -0.01),
+            )
+            slot_cooldown.setBin("fixed", 80)
+            slot_cooldown.hide()
 
-            slot_label = OnscreenText(
+            slot_key_bg = self._make_ui_frame(
+                parent=slot_root,
+                frame_color=(0.07, 0.055, 0.036, 0.92),
+                frame_size=(-0.003, 0.033, -0.032, 0.004),
+                pos=(slot_size - 0.026, 0, -slot_size + 0.012),
+            )
+            slot_label = self._make_ui_text(
                 text=str(i + 1),
-                pos=(slot_size * 0.5, -slot_size * 0.66),
+                pos=(0.015, -0.022),
                 align=TextNode.ACenter,
-                scale=0.04,
-                fg=(0.78, 0.85, 0.9, 0.85),
+                scale=0.024,
+                fg=palette["text"],
                 shadow=(0, 0, 0, 0.8),
+                mayChange=True,
+                parent=slot_key_bg,
+            )
+            empty_label = self._make_ui_text(
+                text="",
+                pos=(slot_size * 0.5, -slot_size * 0.58),
+                align=TextNode.ACenter,
+                scale=0.022,
+                fg=palette["text_muted"],
+                shadow=(0, 0, 0, 0.78),
                 mayChange=True,
                 parent=slot_inner,
             )
@@ -1713,103 +2478,142 @@ class Game(ShowBase):
                 image=MOB_ICON_PATH,
                 parent=slot_inner,
                 pos=(slot_size * 0.5, 0, -slot_size * 0.5),
-                scale=(0.033, 1, 0.033),
+                scale=(0.044, 1, 0.044),
             )
             slot_image.setTransparency(TransparencyAttrib.MAlpha)
             slot_image.hide()
 
-            hp_back = DirectFrame(
+            hp_back = self._make_ui_frame(
                 parent=slot_root,
-                frameColor=(0.0, 0.0, 0.0, 0.48),
-                frameSize=(0, slot_size, -0.014, 0),
-                pos=(0, 0, -slot_size - 0.016),
+                frame_color=palette["track"],
+                frame_size=(0, slot_size, -0.018, 0),
+                pos=(0, 0, -slot_size - 0.024),
             )
-            hp_back.setTransparency(TransparencyAttrib.MAlpha)
+            hp_trail = DirectWaitBar(
+                parent=hp_back,
+                text="",
+                range=MOB_MAX_HP,
+                value=0,
+                frameColor=(0, 0, 0, 0),
+                barColor=(0.38, 0.08, 0.055, 0.72),
+                frameSize=(0, slot_size, -0.018, 0),
+                pos=(0, 0, 0),
+            )
+            hp_trail.setTransparency(TransparencyAttrib.MAlpha)
             hp_bar = DirectWaitBar(
                 parent=hp_back,
                 text="",
                 range=MOB_MAX_HP,
                 value=0,
                 frameColor=(0, 0, 0, 0),
-                barColor=(0.18, 0.86, 0.42, 0.94),
-                frameSize=(0, slot_size, -0.014, 0),
+                barColor=(0.24, 0.76, 0.38, 0.94),
+                frameSize=(0, slot_size, -0.018, 0),
                 pos=(0, 0, 0),
             )
+            hp_bar.setTransparency(TransparencyAttrib.MAlpha)
 
             self.boss_mob_slots.append(
                 {
                     "root": slot_root,
+                    "shadow": slot_shadow,
+                    "glow": slot_glow,
                     "frame": slot_frame,
                     "inner": slot_inner,
+                    "highlight": slot_highlight,
+                    "cooldown": slot_cooldown,
+                    "key_bg": slot_key_bg,
                     "label": slot_label,
+                    "empty_label": empty_label,
                     "image": slot_image,
+                    "hp_trail": hp_trail,
                     "hp_bar": hp_bar,
+                    "rarity": rarity_cycle[i % len(rarity_cycle)],
+                    "slot_size": slot_size,
                 }
             )
 
         self.boss_ui_root.hide()
 
     def _setup_boss_inventory_ui(self):
-        self.boss_inventory_root = DirectFrame(
-            parent=self.aspect2d,
-            frameColor=(0.018, 0.024, 0.032, 0.86),
-            frameSize=(-0.42, 0.42, -0.15, 0.15),
-            pos=(0, 0, -0.58),
+        palette = self.ui_palette
+        self.boss_inventory_root = self._make_fantasy_panel(
+            self.aspect2d,
+            (-0.48, 0.48, -0.18, 0.18),
+            (0, 0, -0.56),
+            name="boss_inventory",
         )
-        self.boss_inventory_root.setTransparency(TransparencyAttrib.MAlpha)
 
-        self.boss_inventory_title = OnscreenText(
-            text="INVENTORY",
-            pos=(-0.38, 0.095),
+        self.boss_inventory_title = self._make_ui_text(
+            text="ARSENAL",
+            pos=(-0.40, 0.105),
             align=TextNode.ALeft,
-            scale=0.036,
-            fg=(1.0, 0.84, 0.38, 0.95),
+            scale=0.038,
+            fg=palette["text"],
             shadow=(0, 0, 0, 0.85),
             mayChange=False,
             parent=self.boss_inventory_root,
         )
-        self.boss_inventory_hint = OnscreenText(
-            text="Drag mob into the dungeon",
-            pos=(-0.38, 0.045),
+        self.boss_inventory_hint = self._make_ui_text(
+            text="SUMMON SHADE",
+            pos=(-0.40, 0.055),
             align=TextNode.ALeft,
-            scale=0.028,
-            fg=(0.78, 0.84, 0.9, 0.9),
+            scale=0.025,
+            fg=palette["text_dim"],
             shadow=(0, 0, 0, 0.8),
-            mayChange=False,
+            mayChange=True,
             parent=self.boss_inventory_root,
         )
 
-        self.boss_inventory_mob_slot = DirectFrame(
+        self.boss_inventory_mob_slot = self._make_ui_frame(
             parent=self.boss_inventory_root,
-            frameColor=(0.95, 0.78, 0.32, 0.88),
-            frameSize=(-0.065, 0.065, -0.065, 0.065),
-            pos=(0.24, 0, 0.01),
+            frame_color=self.ui_rarity_colors["legendary"],
+            frame_size=(-0.078, 0.078, -0.078, 0.078),
+            pos=(0.27, 0, 0.005),
         )
-        self.boss_inventory_mob_slot.setTransparency(TransparencyAttrib.MAlpha)
         self.boss_inventory_mob_slot.bind(DGG.B1PRESS, self._on_boss_inventory_mob_press)
 
-        self.boss_inventory_mob_inner = DirectFrame(
+        self.boss_inventory_mob_glow = self._make_ui_frame(
             parent=self.boss_inventory_mob_slot,
-            frameColor=(0.04, 0.055, 0.065, 0.94),
-            frameSize=(-0.053, 0.053, -0.053, 0.053),
-            pos=(0, 0, 0),
+            frame_color=palette["gold_soft"],
+            frame_size=(-0.09, 0.09, -0.09, 0.09),
         )
-        self.boss_inventory_mob_inner.setTransparency(TransparencyAttrib.MAlpha)
+        self.boss_inventory_mob_inner = self._make_ui_frame(
+            parent=self.boss_inventory_mob_slot,
+            frame_color=palette["track"],
+            frame_size=(-0.062, 0.062, -0.062, 0.062),
+        )
         self.boss_inventory_mob_inner.bind(DGG.B1PRESS, self._on_boss_inventory_mob_press)
         self.boss_inventory_mob_icon = OnscreenImage(
             image=MOB_ICON_PATH,
             parent=self.boss_inventory_mob_inner,
             pos=(0, 0, 0),
-            scale=(0.052, 1, 0.052),
+            scale=(0.058, 1, 0.058),
         )
         self.boss_inventory_mob_icon.setTransparency(TransparencyAttrib.MAlpha)
-        self.boss_inventory_mob_count = OnscreenText(
+        self.boss_inventory_cooldown = self._make_ui_frame(
+            parent=self.boss_inventory_mob_inner,
+            frame_color=palette["cooldown"],
+            frame_size=(-0.062, 0.062, -0.062, 0.062),
+        )
+        self.boss_inventory_cooldown.setBin("fixed", 80)
+        self.boss_inventory_cooldown.hide()
+        self.boss_inventory_mob_count = self._make_ui_text(
             text="",
-            pos=(0.24, -0.095),
+            pos=(0.27, -0.11),
             align=TextNode.ACenter,
-            scale=0.028,
-            fg=(0.9, 0.94, 0.98, 0.92),
+            scale=0.026,
+            fg=palette["text"],
             shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.boss_inventory_root,
+        )
+        self.boss_inventory_cost_text = self._make_ui_text(
+            text=f"{int(MOB_DROP_MANA_COST)} MP",
+            pos=(0.27, 0.105),
+            align=TextNode.ACenter,
+            scale=0.023,
+            fg=palette["gold"],
+            shadow=(0, 0, 0, 0.82),
             mayChange=True,
             parent=self.boss_inventory_root,
         )
@@ -1818,7 +2622,7 @@ class Game(ShowBase):
             image=MOB_ICON_PATH,
             parent=self.aspect2d,
             pos=(0, 0, 0),
-            scale=(0.06, 1, 0.06),
+            scale=(0.072, 1, 0.072),
         )
         self.boss_inventory_drag_icon.setTransparency(TransparencyAttrib.MAlpha)
         self.boss_inventory_drag_icon.hide()
@@ -1848,7 +2652,7 @@ class Game(ShowBase):
         for mob in self.local_mobs.values():
             mob.set_mode("AI")
         self.camera_follow_x = self.camera.getX()
-        self._set_status("Inventory: drag mobs into the dungeon.")
+        self._set_status("Arsenal opened.")
 
     def _close_boss_inventory(self):
         self.boss_inventory_open = False
@@ -1868,14 +2672,14 @@ class Game(ShowBase):
 
     def _start_boss_inventory_mob_drag(self):
         if len(self.local_mobs) >= MAX_ACTIVE_MOBS:
-            self._set_status(f"Spawn limit reached ({MAX_ACTIVE_MOBS}).")
+            self._set_status(f"Summon limit reached ({MAX_ACTIVE_MOBS}).")
             return
         drop_left = self._boss_action_left("drop", MOB_DROP_COOLDOWN)
         if drop_left > 0.0:
-            self._set_status(f"Drop on cooldown ({drop_left:.1f}s).")
+            self._set_status(f"Summon recharging ({drop_left:.1f}s).")
             return
         if self.boss_mana + 1e-5 < MOB_DROP_MANA_COST:
-            self._set_status(f"Not enough mana for Drop mob ({int(MOB_DROP_MANA_COST)} PM).")
+            self._set_status(f"Need {int(MOB_DROP_MANA_COST)} MP to summon.")
             return
         self.boss_inventory_dragging = "mob"
         self._update_boss_inventory_drag_icon()
@@ -1968,11 +2772,11 @@ class Game(ShowBase):
             return
         pos = self._get_mob_drop_position_from_mouse()
         if pos is None:
-            self._set_status("Drop mob on the dungeon floor.")
+            self._set_status("Summon on the dungeon floor.")
             return
-        if not self._try_spend_boss_action("drop", MOB_DROP_MANA_COST, MOB_DROP_COOLDOWN, "Drop mob"):
+        if not self._try_spend_boss_action("drop", MOB_DROP_MANA_COST, MOB_DROP_COOLDOWN, "Summon shade"):
             return
-        self._spawn_local_mob_at(pos, status_label="Dropped mob")
+        self._spawn_local_mob_at(pos, status_label="Summoned shade")
 
     def _on_boss_control_slot_press(self, entity: str | int, _event=None):
         self._ui_consumed_click = True
@@ -1980,7 +2784,7 @@ class Game(ShowBase):
             return
         if entity == "boss":
             self._set_controlled_entity("boss")
-            self._set_status("Control: boss")
+            self._set_status("Commanding boss.")
             return
         if not isinstance(entity, int):
             return
@@ -1988,11 +2792,11 @@ class Game(ShowBase):
         mob_ids = sorted(self.local_mobs.keys())
         slot = entity
         if slot < 1 or slot > len(mob_ids):
-            self._set_status(f"No mob in slot {slot}.")
+            self._set_status(f"Slot {slot} is empty.")
             return
         mob_id = mob_ids[slot - 1]
         self._set_controlled_entity(mob_id)
-        self._set_status(f"Control: {self._control_label(mob_id)}")
+        self._set_status(f"Commanding {self._control_label(mob_id)}.")
 
     def _get_controlled_boss_ui_state(self) -> tuple[str, str, int, int]:
         if self.controlled_entity == "boss":
@@ -2005,6 +2809,7 @@ class Game(ShowBase):
         return "BOSS", "B", max(0, min(self.boss_hp, BOSS_MAX_HP)), BOSS_MAX_HP
 
     def _update_boss_ui(self, now: float, attack_cd: float, attack_left: float):
+        palette = self.ui_palette
         name, icon, hp, max_hp = self._get_controlled_boss_ui_state()
         hp_ratio = 0.0 if max_hp <= 0 else hp / max_hp
         pm_ratio = 0.0 if BOSS_MAX_MANA <= 0 else self.boss_mana / BOSS_MAX_MANA
@@ -2014,21 +2819,48 @@ class Game(ShowBase):
         self._set_visible("boss_control_icon_text", self.boss_control_icon_text, not is_controlled_mob)
         if not is_controlled_mob:
             self._set_text_if_changed("boss_control_icon_text", self.boss_control_icon_text, icon)
-        self._set_text_if_changed("boss_control_name", self.boss_control_name, f"Control: {name}")
-        self._set_widget_number_if_changed("boss_ui_pv_value", self.boss_pv_bar, "value", max(0.0, min(1.0, hp_ratio)))
-        self._set_widget_number_if_changed("boss_ui_pm_value", self.boss_pm_bar, "value", pm_ratio)
+        self._set_text_if_changed("boss_control_name", self.boss_control_name, f"COMMAND {name}")
+        self._set_animated_bar_value(
+            "boss_ui_pv_value",
+            self.boss_pv_bar,
+            max(0.0, min(1.0, hp_ratio)),
+            trail_widget=self.boss_pv_trail,
+            flash_widget=self.boss_pv_flash,
+        )
+        self._set_animated_bar_value(
+            "boss_ui_pm_value",
+            self.boss_pm_bar,
+            max(0.0, min(1.0, pm_ratio)),
+            trail_widget=self.boss_pm_trail,
+            flash_widget=self.boss_pm_flash,
+            speed=10.0,
+            trail_speed=7.0,
+        )
         self._set_text_if_changed("boss_ui_pv_text", self.boss_pv_text, f"{hp}/{max_hp}")
         self._set_text_if_changed("boss_ui_pm_text", self.boss_pm_text, f"{int(self.boss_mana)}/{int(BOSS_MAX_MANA)}")
 
+        pulse = 0.5 + 0.5 * math.sin(self._ui_pulse_time * 4.8)
+        icon_hovered = self._is_mouse_over_widget(self.boss_control_icon_outer)
+        icon_glow_alpha = 0.12 + pulse * 0.12 if self.controlled_entity == "boss" else 0.04
+        if icon_hovered:
+            icon_glow_alpha = max(icon_glow_alpha, 0.28)
+        self.boss_control_icon_glow["frameColor"] = (1.0, 0.72, 0.28, icon_glow_alpha)
+        if self.controlled_entity == "boss" and attack_cd > 0.0 and attack_left > 0.001:
+            ratio = max(0.0, min(1.0, attack_left / attack_cd))
+            self.boss_control_cooldown["frameSize"] = (-0.076, 0.076, -0.076, -0.076 + 0.152 * ratio)
+            self.boss_control_cooldown.show()
+        else:
+            self.boss_control_cooldown.hide()
+
         spawn_left = self._boss_action_left("spawn", SPAWN_COOLDOWN, now)
         if len(self.local_mobs) >= MAX_ACTIVE_MOBS:
-            spawn_text = f"Spawn full {len(self.local_mobs)}/{MAX_ACTIVE_MOBS}"
+            spawn_text = f"SUMMONS FULL {len(self.local_mobs)}/{MAX_ACTIVE_MOBS}"
         elif self.boss_mana + 1e-5 < MOB_SPAWN_MANA_COST:
-            spawn_text = f"Spawn {int(MOB_SPAWN_MANA_COST)} PM"
+            spawn_text = f"SUMMON {int(MOB_SPAWN_MANA_COST)} MP"
         elif spawn_left <= 0.001:
-            spawn_text = f"Spawn ready {int(MOB_SPAWN_MANA_COST)} PM"
+            spawn_text = f"SUMMON READY {int(MOB_SPAWN_MANA_COST)} MP"
         else:
-            spawn_text = f"Spawn {spawn_left:.1f}s {int(MOB_SPAWN_MANA_COST)} PM"
+            spawn_text = f"SUMMON {spawn_left:.1f}S {int(MOB_SPAWN_MANA_COST)} MP"
         self._set_text_if_changed("boss_spawn_text", self.boss_spawn_text, spawn_text)
 
         mob_ids = sorted(self.local_mobs.keys())
@@ -2036,26 +2868,96 @@ class Game(ShowBase):
             mob_id = mob_ids[index] if index < len(mob_ids) else None
             is_filled = mob_id is not None
             is_controlled = is_filled and self.controlled_entity == mob_id
+            is_hovered = self._is_mouse_over_widget(slot["root"])
+            rarity_color = self.ui_rarity_colors.get(slot.get("rarity", "common"), self.ui_rarity_colors["common"])
 
-            frame_color = (1.0, 0.82, 0.35, 0.92) if is_controlled else (0.9, 0.86, 0.72, 0.72)
-            inner_color = (0.11, 0.14, 0.13, 0.96) if is_controlled else (0.04, 0.05, 0.06, 0.9)
-            icon_color = (0.2, 1.0, 0.48, 0.98) if is_filled else (0.78, 0.85, 0.9, 0.34)
+            if is_controlled:
+                frame_color = palette["gold"]
+                inner_color = (0.10, 0.095, 0.065, 0.96)
+                glow_alpha = 0.22 + pulse * 0.18
+            elif is_hovered:
+                frame_color = (0.88, 0.66, 0.32, 0.95)
+                inner_color = (0.055, 0.052, 0.044, 0.96)
+                glow_alpha = 0.20
+            elif is_filled:
+                frame_color = rarity_color
+                inner_color = (0.035, 0.038, 0.041, 0.94)
+                glow_alpha = 0.06
+            else:
+                frame_color = (0.34, 0.29, 0.22, 0.62)
+                inner_color = (0.018, 0.020, 0.024, 0.88)
+                glow_alpha = 0.0
+            key_color = palette["text"] if is_filled or is_hovered else palette["text_muted"]
 
             slot["frame"]["frameColor"] = frame_color
             slot["inner"]["frameColor"] = inner_color
-            slot["label"].setFg(icon_color)
+            slot["glow"]["frameColor"] = (1.0, 0.72, 0.28, glow_alpha)
+            slot["key_bg"]["frameColor"] = (0.12, 0.085, 0.045, 0.96 if is_filled or is_hovered else 0.72)
+            slot["label"].setFg(key_color)
             self._set_visible(f"boss_mob_slot_image_visible_{index}", slot["image"], is_filled)
-            self._set_visible(f"boss_mob_slot_label_visible_{index}", slot["label"], not is_filled)
+            self._set_visible(f"boss_mob_slot_empty_label_visible_{index}", slot["empty_label"], not is_filled)
             slot["image"].setColor(1, 1, 1, 0.98 if is_filled else 0.0)
 
             if is_filled:
                 hp_value = max(0, min(self.local_mob_hp.get(mob_id, MOB_MAX_HP), MOB_MAX_HP))
-                self._set_widget_number_if_changed(f"boss_mob_slot_hp_{index}", slot["hp_bar"], "value", hp_value)
-                self._set_widget_number_if_changed(f"boss_mob_slot_range_{index}", slot["hp_bar"], "range", MOB_MAX_HP)
             else:
+                hp_value = 0
                 self._set_text_if_changed(f"boss_mob_slot_label_{index}", slot["label"], str(index + 1))
-                self._set_widget_number_if_changed(f"boss_mob_slot_hp_{index}", slot["hp_bar"], "value", 0)
-                self._set_widget_number_if_changed(f"boss_mob_slot_range_{index}", slot["hp_bar"], "range", MOB_MAX_HP)
+            self._set_widget_number_if_changed(f"boss_mob_slot_trail_range_{index}", slot["hp_trail"], "range", MOB_MAX_HP)
+            self._set_widget_number_if_changed(f"boss_mob_slot_range_{index}", slot["hp_bar"], "range", MOB_MAX_HP)
+            self._set_animated_bar_value(
+                f"boss_mob_slot_hp_value_{index}",
+                slot["hp_bar"],
+                hp_value,
+                trail_widget=slot["hp_trail"],
+                speed=16.0,
+                trail_speed=5.0,
+            )
+
+            if is_controlled and attack_cd > 0.0 and attack_left > 0.001:
+                ratio = max(0.0, min(1.0, attack_left / attack_cd))
+                size = float(slot["slot_size"])
+                inset = 0.01
+                slot["cooldown"]["frameSize"] = (inset, size - inset, -size + inset, -size + inset + (size - inset * 2.0) * ratio)
+                slot["cooldown"].show()
+            else:
+                slot["cooldown"].hide()
+
+        drop_left = self._boss_action_left("drop", MOB_DROP_COOLDOWN, now)
+        inventory_hovered = self._is_mouse_over_widget(self.boss_inventory_mob_slot)
+        inventory_full = len(self.local_mobs) >= MAX_ACTIVE_MOBS
+        inventory_low_mana = self.boss_mana + 1e-5 < MOB_DROP_MANA_COST
+        inventory_ready = not inventory_full and not inventory_low_mana and drop_left <= 0.001
+        inventory_pulse = 0.5 + 0.5 * math.sin(self._ui_pulse_time * 5.2)
+        if inventory_ready:
+            inv_border = self.ui_rarity_colors["legendary"]
+            inv_glow = 0.18 + inventory_pulse * 0.16
+            inv_hint = "SUMMON READY"
+        elif inventory_full:
+            inv_border = (0.35, 0.30, 0.24, 0.68)
+            inv_glow = 0.02
+            inv_hint = "SUMMONS FULL"
+        elif inventory_low_mana:
+            inv_border = (0.34, 0.38, 0.56, 0.72)
+            inv_glow = 0.04
+            inv_hint = "NEEDS MANA"
+        else:
+            inv_border = (0.54, 0.39, 0.22, 0.82)
+            inv_glow = 0.06
+            inv_hint = f"RECHARGING {drop_left:.1f}S"
+        if inventory_hovered:
+            inv_glow = max(inv_glow, 0.28)
+        self.boss_inventory_mob_slot["frameColor"] = inv_border
+        self.boss_inventory_mob_glow["frameColor"] = (1.0, 0.72, 0.28, inv_glow)
+        self._set_text_if_changed("boss_inventory_hint", self.boss_inventory_hint, inv_hint)
+        self._set_text_if_changed("boss_inventory_mob_count", self.boss_inventory_mob_count, f"{len(self.local_mobs)}/{MAX_ACTIVE_MOBS}")
+        self._set_text_if_changed("boss_inventory_cost_text", self.boss_inventory_cost_text, f"{int(MOB_DROP_MANA_COST)} MP")
+        if drop_left > 0.001:
+            ratio = max(0.0, min(1.0, drop_left / MOB_DROP_COOLDOWN))
+            self.boss_inventory_cooldown["frameSize"] = (-0.062, 0.062, -0.062, -0.062 + 0.124 * ratio)
+            self.boss_inventory_cooldown.show()
+        else:
+            self.boss_inventory_cooldown.hide()
 
     def _set_status(self, text: str):
         self.status_text.setText(text)
@@ -2083,8 +2985,11 @@ class Game(ShowBase):
             return
         if visible:
             widget.show()
+            widget.setAlphaScale(0.0)
+            self._ui_fade_state[key] = {"widget": widget, "value": 0.0, "target": 1.0}
         else:
             widget.hide()
+            self._ui_fade_state.pop(key, None)
         self._ui_visible[key] = visible
 
     def _set_text_if_changed(self, key: str, widget, text: str):
@@ -2111,6 +3016,7 @@ class Game(ShowBase):
         now = time.monotonic()
         is_hero = self.player_id == 0
         is_boss = self.player_id == 1
+        self._update_role_ui_layout()
 
         if is_hero:
             role = "Hero"
@@ -2124,36 +3030,44 @@ class Game(ShowBase):
 
         if self.editor_enabled:
             self._apply_boss_editor_layout()
+        if self.hero_map_enabled:
+            self._apply_hero_map_layout()
         show_editor_root = is_boss and self.editor_enabled
         editor_fullscreen = show_editor_root and self.editor_expanded
+        hero_map_fullscreen = is_hero and self.hero_map_enabled and self.hero_map_expanded
         show_boss_ui = is_boss and not editor_fullscreen
 
-        self._set_visible("hero_ui_root", self.hero_ui_root, is_hero)
+        self._set_visible("hero_ui_root", self.hero_ui_root, is_hero and not hero_map_fullscreen)
+        self._set_visible("hero_map_root", self.hero_map_root, is_hero and self.hero_map_enabled)
         self._set_visible("boss_ui_root", self.boss_ui_root, show_boss_ui)
         self._set_visible("boss_inventory_root", self.boss_inventory_root, is_boss and self.boss_inventory_open)
-        self._set_visible("left_panel", self.left_panel, (not is_hero) and (not is_boss) and (not editor_fullscreen))
-        self._set_visible("right_panel", self.right_panel, (not is_hero) and (not is_boss) and (not editor_fullscreen))
-        self._set_visible("action_panel", self.action_panel, (not is_hero) and (not is_boss) and (not editor_fullscreen))
+        self._set_visible("left_panel", self.left_panel, (not is_hero) and (not is_boss) and (not editor_fullscreen) and (not hero_map_fullscreen))
+        self._set_visible("right_panel", self.right_panel, (not is_hero) and (not is_boss) and (not editor_fullscreen) and (not hero_map_fullscreen))
+        self._set_visible("action_panel", self.action_panel, (not is_hero) and (not is_boss) and (not editor_fullscreen) and (not hero_map_fullscreen))
         self._set_visible("editor_root", self.editor_root, show_editor_root)
         if is_boss and self.editor_enabled and not self.editor_expanded:
             self.right_panel.setZ(0.44)
         else:
             self.right_panel.setZ(0.93)
         if show_editor_root:
-            self._set_text_if_changed("editor_title", self.editor_title, "BOSS EDITOR" if self.editor_expanded else "BOSS MAP")
+            self._set_text_if_changed("editor_title", self.editor_title, "WAR TABLE" if self.editor_expanded else "DUNGEON")
+            self._set_text_if_changed("editor_subtitle", self.editor_subtitle, "TACTICAL MAP" if self.editor_expanded else "WAR TABLE")
 
-        self._set_text_if_changed("role_label", self.role_label, f"Role: {role}")
-        self._set_text_if_changed("control_text", self.control_text, f"Control: {control}")
+        self._set_text_if_changed("role_label", self.role_label, f"ROLE {role}")
+        self._set_text_if_changed("control_text", self.control_text, f"COMMAND {control}")
 
         if self.winner:
             objective = "Game over."
         elif is_hero:
             if self.boss_phase_unlocked:
-                objective = "Objective: defeat the boss."
+                objective = "Defeat the boss."
+            elif not self._hero_is_boss_ready():
+                left = max(0, BOSS_READY_HERO_LEVEL - self.hero_level)
+                objective = f"Hunt mobs, gain power ({left} kills to boss-ready)."
             else:
-                objective = f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss."
+                objective = f"Reach the end, then defeat the boss."
         elif is_boss:
-            objective = "Objective: kill the hero before they kill you."
+            objective = f"Break the hero before power {BOSS_READY_HERO_LEVEL}."
         else:
             objective = "Waiting for role assignment."
         self._set_text_if_changed("objective_label", self.objective_label, objective)
@@ -2162,12 +3076,13 @@ class Game(ShowBase):
             phase_text = f"{self.winner.title()} wins!"
         elif self.boss_phase_unlocked:
             phase_text = "Phase 2: boss vulnerable"
+        elif self._hero_is_boss_ready():
+            phase_text = f"Hero power {self.hero_level}: boss gate open"
+        elif self.player_id in (0, 1):
+            phase_text = f"Hero power {self.hero_level}: damage {self._get_hero_damage()}"
         else:
             phase_text = ""
         self._set_text_if_changed("phase_label", self.phase_label, phase_text)
-
-        if is_hero:
-            self._set_text_if_changed("hero_objective_text", self.hero_objective_text, objective)
 
         hero_hp = max(0, min(self.hero_hp, HERO_MAX_HP))
         boss_hp = max(0, min(self.boss_hp, BOSS_MAX_HP))
@@ -2179,20 +3094,23 @@ class Game(ShowBase):
         self._set_text_if_changed("boss_hp_text", self.boss_hp_text, f"{boss_hp}/{BOSS_MAX_HP}")
 
         mob_count = len(self.local_mobs) if is_boss else len(self.remote_mobs)
-        self._set_text_if_changed("mob_count_text", self.mob_count_text, f"Mobs: {mob_count}/{MAX_ACTIVE_MOBS}")
+        self._set_text_if_changed("mob_count_text", self.mob_count_text, f"Summons {mob_count}/{MAX_ACTIVE_MOBS}")
 
         attack_cd = self._get_current_attack_cooldown()
         cd_key = self._get_attack_cooldown_key()
         attack_left = max(0.0, attack_cd - (now - self.last_attack_times[cd_key]))
         combo_step = self.combo_state[cd_key]["step"] + 1 if self.combo_state[cd_key]["step"] >= 0 else 0
-        self._set_text_if_changed("combo_text", self.combo_text, f"Combo {combo_step}")
+        if is_hero:
+            self._set_text_if_changed("combo_text", self.combo_text, f"Power {self.hero_level} DMG {self._get_hero_damage()}")
+        else:
+            self._set_text_if_changed("combo_text", self.combo_text, f"Chain {combo_step}")
 
         self._set_widget_number_if_changed("attack_bar_range", self.attack_bar, "range", max(0.001, attack_cd))
         self._set_widget_number_if_changed("attack_bar_value", self.attack_bar, "value", max(0.0, attack_cd - attack_left))
         if attack_left <= 0.001:
-            self._set_text_if_changed("attack_text", self.attack_text, "Attack Ready")
+            self._set_text_if_changed("attack_text", self.attack_text, "Strike Ready")
         else:
-            self._set_text_if_changed("attack_text", self.attack_text, f"Attack {attack_left:.2f}s")
+            self._set_text_if_changed("attack_text", self.attack_text, f"Strike {attack_left:.2f}s")
 
         if is_boss:
             spawn_left = self._boss_action_left("spawn", SPAWN_COOLDOWN, now)
@@ -2209,13 +3127,13 @@ class Game(ShowBase):
                 self._set_text_if_changed(
                     "spawn_text",
                     self.spawn_text,
-                    f"Spawn Ready {int(MOB_SPAWN_MANA_COST)} PM ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})",
+                    f"Summon Ready {int(MOB_SPAWN_MANA_COST)} MP ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})",
                 )
             else:
                 self._set_text_if_changed(
                     "spawn_text",
                     self.spawn_text,
-                    f"Spawn {spawn_left:.2f}s {int(MOB_SPAWN_MANA_COST)} PM ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})",
+                    f"Summon {spawn_left:.2f}s {int(MOB_SPAWN_MANA_COST)} MP ({len(self.local_mobs)}/{MAX_ACTIVE_MOBS})",
                 )
         else:
             self._set_visible("spawn_bar", self.spawn_bar, False)
@@ -2231,24 +3149,47 @@ class Game(ShowBase):
 
         if is_hero:
             pv_ratio = 0.0 if HERO_MAX_HP <= 0 else hero_hp / HERO_MAX_HP
-            self._set_widget_number_if_changed("hero_pv_value", self.hero_pv_bar, "value", max(0.0, min(1.0, pv_ratio)))
+            self._set_animated_bar_value(
+                "hero_pv_value",
+                self.hero_pv_bar,
+                max(0.0, min(1.0, pv_ratio)),
+                trail_widget=self.hero_pv_trail,
+                flash_widget=self.hero_pv_flash,
+            )
+            self._set_text_if_changed("hero_pv_text", self.hero_pv_text, f"{hero_hp}/{HERO_MAX_HP}")
 
             pm_ratio = 1.0
             if attack_cd > 0.0:
                 pm_ratio = 1.0 - (attack_left / attack_cd)
-            self._set_widget_number_if_changed("hero_pm_value", self.hero_pm_bar, "value", max(0.0, min(1.0, pm_ratio)))
+            self._set_animated_bar_value(
+                "hero_pm_value",
+                self.hero_pm_bar,
+                max(0.0, min(1.0, pm_ratio)),
+                trail_widget=self.hero_pm_trail,
+                flash_widget=self.hero_pm_flash,
+                speed=13.0,
+                trail_speed=8.0,
+            )
+            pm_text = "Ready" if attack_left <= 0.001 else f"{attack_left:.1f}s"
+            self._set_text_if_changed("hero_pm_text", self.hero_pm_text, pm_text)
 
             end_ratio = 1.0
             state = self.combo_state.get(self._get_attack_cooldown_key(), {"step": -1, "last_time": 0.0})
             if state.get("step", -1) >= 0:
                 elapsed = max(0.0, now - float(state.get("last_time", now)))
                 end_ratio = max(0.0, 1.0 - (elapsed / COMBO_WINDOW))
-            self._set_widget_number_if_changed(
+            self._set_animated_bar_value(
                 "hero_endurance_value",
                 self.hero_endurance_bar,
-                "value",
                 max(0.0, min(1.0, end_ratio)),
+                trail_widget=self.hero_endurance_trail,
+                flash_widget=self.hero_endurance_flash,
+                speed=12.0,
+                trail_speed=6.0,
             )
+            chain_text = f"Chain {combo_step}" if combo_step > 0 else "Calm"
+            self._set_text_if_changed("hero_endurance_text", self.hero_endurance_text, chain_text)
+            self._set_text_if_changed("hero_power_text", self.hero_power_text, f"POWER {self.hero_level}")
 
     def _init_entities_for_role(self):
         if self.hero and self.boss:
@@ -2264,11 +3205,11 @@ class Game(ShowBase):
         if self.player_id == 0:
             self._ensure_boss(boss_start, "REMOTE")
             self.controlled_entity = "hero"
-            self._set_status("Hero ready. Reach the end to unlock the boss.")
+            self._set_status("Hero awakened.")
         else:
             self._ensure_boss(boss_start, "PLAYER")
             self.controlled_entity = "boss"
-            self._set_status("Boss ready. F=spawn, TAB=cycle, 1-6=pick mob, B=boss, M=map.")
+            self._set_status("Boss awakened.")
 
         self._update_hud()
 
@@ -2304,6 +3245,27 @@ class Game(ShowBase):
             return BOSS_ATTACK_COOLDOWN
         return CONTROLLED_MOB_ATTACK_COOLDOWN
 
+    def _get_hero_damage(self, combo_multiplier: float = 1.0) -> int:
+        base_damage = HERO_DAMAGE + self.hero_level * HERO_DAMAGE_PER_LEVEL
+        return max(1, int(base_damage * combo_multiplier))
+
+    def _hero_is_boss_ready(self) -> bool:
+        return self._get_hero_damage() >= MOB_MAX_HP or self.hero_level >= BOSS_READY_HERO_LEVEL
+
+    def _apply_hero_mob_kill_reward(self, kills: int = 1, announce: bool = True):
+        kills = max(1, int(kills))
+        self.hero_mob_kills += kills
+        self.hero_level += kills
+        if self.player_id == 0:
+            self.hero_hp = min(HERO_MAX_HP, self.hero_hp + HERO_HEAL_PER_MOB_KILL * kills)
+        if announce:
+            damage = self._get_hero_damage()
+            if self._hero_is_boss_ready():
+                self._set_status(f"Power {self.hero_level}: mobs fall in one hit. Reach the boss.")
+            else:
+                left = max(0, BOSS_READY_HERO_LEVEL - self.hero_level)
+                self._set_status(f"Power {self.hero_level}: damage {damage}. {left} kills until boss-ready.")
+
     def _regen_boss_mana(self, dt: float):
         if self.player_id != 1 or self.winner:
             return
@@ -2320,10 +3282,10 @@ class Game(ShowBase):
         now = time.monotonic()
         left = self._boss_action_left(action_key, cooldown, now)
         if left > 0.0:
-            self._set_status(f"{label} on cooldown ({left:.1f}s).")
+            self._set_status(f"{label} recharging ({left:.1f}s).")
             return False
         if self.boss_mana + 1e-5 < mana_cost:
-            self._set_status(f"Not enough mana for {label} ({int(mana_cost)} PM).")
+            self._set_status(f"Need {int(mana_cost)} MP for {label}.")
             return False
         self.boss_mana = max(0.0, self.boss_mana - mana_cost)
         self.last_boss_action_times[action_key] = now
@@ -2513,12 +3475,31 @@ class Game(ShowBase):
         elif payload_type == "attack":
             self._apply_incoming_attack(payload)
         elif payload_type == "phase":
+            self.hero_level = max(self.hero_level, int(payload.get("hero_level", self.hero_level)))
+            self.hero_mob_kills = max(self.hero_mob_kills, int(payload.get("hero_mob_kills", self.hero_mob_kills)))
             if bool(payload.get("unlocked", False)):
                 self._unlock_boss_phase(announce=False)
+        elif payload_type == "hero_progress":
+            self._apply_remote_hero_progress(payload)
         elif payload_type == "game_over":
             winner = payload.get("winner")
             if winner in ("hero", "boss"):
                 self._declare_winner(winner, announce=False)
+
+    def _apply_remote_hero_progress(self, payload: dict[str, Any]):
+        level = payload.get("level")
+        kills = payload.get("kills")
+        try:
+            level_value = int(level)
+            kills_value = int(kills)
+        except (TypeError, ValueError):
+            return
+        if level_value <= self.hero_level and kills_value <= self.hero_mob_kills:
+            return
+        gained = max(1, level_value - self.hero_level)
+        self.hero_level = max(self.hero_level, level_value - gained)
+        self.hero_mob_kills = max(self.hero_mob_kills, kills_value - gained)
+        self._apply_hero_mob_kill_reward(gained, announce=True)
 
     def _apply_remote_hero_state(self, payload: dict[str, Any]):
         if not self.hero:
@@ -2537,6 +3518,8 @@ class Game(ShowBase):
             )
 
         self.hero_hp = int(payload.get("hero_hp", self.hero_hp))
+        self.hero_level = max(self.hero_level, int(payload.get("hero_level", self.hero_level)))
+        self.hero_mob_kills = max(self.hero_mob_kills, int(payload.get("hero_mob_kills", self.hero_mob_kills)))
         if bool(payload.get("boss_phase_unlocked", False)):
             self._unlock_boss_phase(announce=False)
 
@@ -2612,6 +3595,7 @@ class Game(ShowBase):
         self.world.recompute_bounds()
         self.min_x, self.max_x = self.world.setLimit()
         self.goal_x = self.max_x - 2.0
+        self._sync_hero_map_from_world()
 
     def _sync_remote_mobs(self, mobs_data: list[dict[str, Any]]):
         seen_ids: set[int] = set()
@@ -2671,6 +3655,9 @@ class Game(ShowBase):
                     "attack_id": int(hero_anim["attack_id"]),
                 },
                 "hero_hp": self.hero_hp,
+                "hero_level": self.hero_level,
+                "hero_mob_kills": self.hero_mob_kills,
+                "hero_damage": self._get_hero_damage(),
                 "boss_phase_unlocked": self.boss_phase_unlocked,
             }
 
@@ -2731,10 +3718,19 @@ class Game(ShowBase):
     def _unlock_boss_phase(self, announce: bool):
         if self.boss_phase_unlocked:
             return
+        if not self._hero_is_boss_ready():
+            return
         self.boss_phase_unlocked = True
         self._set_status("Boss is now vulnerable.")
         if announce:
-            self._queue_message({"type": "phase", "unlocked": True})
+            self._queue_message(
+                {
+                    "type": "phase",
+                    "unlocked": True,
+                    "hero_level": self.hero_level,
+                    "hero_mob_kills": self.hero_mob_kills,
+                }
+            )
 
     def _declare_winner(self, winner: str, announce: bool):
         if self.winner is not None:
@@ -2951,7 +3947,7 @@ class Game(ShowBase):
         self._play_attack_vfx(self.hero.np)
         self._apply_attack_lunge(self.hero.np, 3.5 + combo_range_bonus * 4.0)
         sent = False
-        damage = int(HERO_DAMAGE * combo_multiplier)
+        damage = self._get_hero_damage(combo_multiplier)
         hit_range = ATTACK_RANGE + combo_range_bonus
 
         if self.boss_phase_unlocked and self._entity_attack_distance(self.hero.np, self.boss.np) <= hit_range:
@@ -3037,6 +4033,15 @@ class Game(ShowBase):
             self._play_hit_vfx(self.local_mobs[mob_id].np, damage)
             if hp == 0:
                 self._destroy_local_mob(mob_id)
+                self._apply_hero_mob_kill_reward(1, announce=False)
+                self._queue_message(
+                    {
+                        "type": "hero_progress",
+                        "level": self.hero_level,
+                        "kills": self.hero_mob_kills,
+                        "damage": self._get_hero_damage(),
+                    }
+                )
 
     def spawn_local_mob_request(self):
         if self.player_id != 1 or self.winner:
@@ -3044,10 +4049,10 @@ class Game(ShowBase):
         if not self.boss:
             return
         if len(self.local_mobs) >= MAX_ACTIVE_MOBS:
-            self._set_status(f"Spawn limit reached ({MAX_ACTIVE_MOBS}).")
+            self._set_status(f"Summon limit reached ({MAX_ACTIVE_MOBS}).")
             return
 
-        if not self._try_spend_boss_action("spawn", MOB_SPAWN_MANA_COST, SPAWN_COOLDOWN, "Spawn mob"):
+        if not self._try_spend_boss_action("spawn", MOB_SPAWN_MANA_COST, SPAWN_COOLDOWN, "Summon shade"):
             return
         self.last_spawn_time = self.last_boss_action_times["spawn"]
 
@@ -3056,11 +4061,11 @@ class Game(ShowBase):
         z = source_np.getZ() + 0.5
         self._spawn_local_mob_at(Vec3(x, 0, z))
 
-    def _spawn_local_mob_at(self, pos: Vec3, status_label: str = "Spawned mob"):
+    def _spawn_local_mob_at(self, pos: Vec3, status_label: str = "Summoned shade"):
         if self.player_id != 1 or self.winner:
             return
         if len(self.local_mobs) >= MAX_ACTIVE_MOBS:
-            self._set_status(f"Spawn limit reached ({MAX_ACTIVE_MOBS}).")
+            self._set_status(f"Summon limit reached ({MAX_ACTIVE_MOBS}).")
             return
         mob_id = self.next_mob_id
         self.next_mob_id += 1
@@ -3078,8 +4083,8 @@ class Game(ShowBase):
         self.ai_attack_clock[mob_id] = 0.0
         self._spawn_pulse_vfx(mob.np.getPos(self.render) + Vec3(0, 0, 1.3), (0.4, 0.95, 1.0, 0.9), 0.22, 0.28)
         slot = self._get_mob_slot(mob_id)
-        slot_text = f" (slot {slot})" if slot is not None else ""
-        self._set_status(f"{status_label} #{mob_id}{slot_text}.")
+        slot_text = f" slot {slot}" if slot is not None else ""
+        self._set_status(f"{status_label}{slot_text}.")
 
     def _destroy_local_mob(self, mob_id: int):
         mob = self.local_mobs.get(mob_id)
@@ -3119,8 +4124,7 @@ class Game(ShowBase):
             return "boss"
         if isinstance(entity, int):
             slot = self._get_mob_slot(entity)
-            slot_text = f" (slot {slot})" if slot is not None else ""
-            return f"mob {entity}{slot_text}"
+            return f"shade {slot}" if slot is not None else f"shade {entity}"
         return "boss"
 
     def cycle_control(self):
@@ -3138,27 +4142,27 @@ class Game(ShowBase):
 
         next_index = (current_index + 1) % len(options)
         self._set_controlled_entity(options[next_index])
-        self._set_status(f"Control: {self._control_label(self.controlled_entity)}")
+        self._set_status(f"Commanding {self._control_label(self.controlled_entity)}.")
 
     def select_control_boss(self):
         if self.player_id != 1 or self.winner:
             return
         self._set_controlled_entity("boss")
-        self._set_status("Control: boss")
+        self._set_status("Commanding boss.")
 
     def select_control_slot(self, slot: int):
         if self.player_id != 1 or self.winner:
             return
         mob_ids = sorted(self.local_mobs.keys())
         if not mob_ids:
-            self._set_status("No mobs to control.")
+            self._set_status("No summons available.")
             return
         if slot < 1 or slot > len(mob_ids):
-            self._set_status(f"No mob in slot {slot}.")
+            self._set_status(f"Slot {slot} is empty.")
             return
         mob_id = mob_ids[slot - 1]
         self._set_controlled_entity(mob_id)
-        self._set_status(f"Control: {self._control_label(mob_id)}")
+        self._set_status(f"Commanding {self._control_label(mob_id)}.")
 
     def _update_ai_attacks(self):
         if self.player_id != 1 or not self.hero or self.winner:
@@ -3328,6 +4332,7 @@ class Game(ShowBase):
 
     def _task_update(self, task):
         dt = globalClock.getDt()
+        self._update_ui_animations(dt)
         self._regen_boss_mana(dt)
         self._process_attack_buffer()
 
@@ -3335,6 +4340,7 @@ class Game(ShowBase):
             self.hitstop_remaining = max(0.0, self.hitstop_remaining - dt)
             self._update_vfx(dt)
             self._update_boss_map_player_icon()
+            self._update_hero_map_player_icon()
             if self.boss_inventory_open:
                 self._update_boss_free_camera(dt)
             self._update_status(dt)
@@ -3358,7 +4364,14 @@ class Game(ShowBase):
             self._update_ai_attacks()
 
         if self.player_id == 0 and self.hero and not self.boss_phase_unlocked and self.hero.np.getX() >= self.goal_x:
-            self._unlock_boss_phase(announce=True)
+            if self._hero_is_boss_ready():
+                self._unlock_boss_phase(announce=True)
+            else:
+                now = time.monotonic()
+                if now - self.last_boss_gate_status_time > 2.0:
+                    self.last_boss_gate_status_time = now
+                    left = max(0, BOSS_READY_HERO_LEVEL - self.hero_level)
+                    self._set_status(f"Too weak for the boss. Defeat {left} more mobs.")
 
         self._update_vfx(dt)
         if self.boss_inventory_open:
@@ -3366,6 +4379,7 @@ class Game(ShowBase):
         else:
             self._update_camera_follow(dt)
         self._update_boss_map_player_icon()
+        self._update_hero_map_player_icon()
         self._update_status(dt)
         self._tick_hud(dt)
         return task.cont
