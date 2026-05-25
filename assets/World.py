@@ -16,6 +16,11 @@ from assets.Config import Config
 from assets.PhysicsManager import PhysicsManager
 from assets.Global_functions import apply_bullet_hitboxes
 
+END_WALL_THICKNESS = 1.0
+END_WALL_Y_HALF_EXTENT = 8.0
+END_WALL_HALF_HEIGHT = 256.0
+
+
 class World:
     def __init__(self, config: Config, render, loader, physics: PhysicsManager, index : int = 0):
         self.config = config.levels[index] if index < len(config.levels) else {}
@@ -58,7 +63,9 @@ class World:
         cube_vis.reparentTo(self.cube_np)
         cube_vis.setScale(1)
 
+        self.end_wall_nps: list = []
         self._min_bound, self._max_bound = self.level_root.get_tight_bounds()
+        self._setup_end_walls()
 
     def _build_static_world(self):
         if not self.config:
@@ -93,11 +100,17 @@ class World:
             module_defs = [{"level_model": path, "ignore": [], "size": 1.0, "pos": (0, 0, 0), "Hpr": (0, 0, 0)} for path in module_paths]
 
         rng = random.Random(self.c.module_seed) if self.c.module_seed is not None else random
-        module_count = max(1, int(self.c.module_count))
+        module_count = max(2, int(self.c.module_count))
         current_x = 0.0
+        base_def = self._find_base_module_def(module_defs)
+        if base_def is not None:
+            module_sequence = [base_def]
+            module_sequence.extend(rng.choice(module_defs) for _ in range(module_count - 2))
+            module_sequence.append(base_def)
+        else:
+            module_sequence = [rng.choice(module_defs) for _ in range(module_count)]
 
-        for _ in range(module_count):
-            module_def = rng.choice(module_defs)
+        for module_index, module_def in enumerate(module_sequence):
             path = module_def["level_model"]
             panda_path = Filename.fromOsSpecific(path)
             panda_path.makeTrueCase()
@@ -134,6 +147,12 @@ class World:
                     "width": width,
                     "center_offset": center_offset,
                     "base_z": float(module.getZ()),
+                    "index": module_index,
+                    "locked_endpoint": bool(
+                        base_def is not None
+                        and self._is_base_module_def(module_def)
+                        and module_index in (0, len(module_sequence) - 1)
+                    ),
                 }
             )
             current_x += width + self.module_spacing
@@ -142,8 +161,20 @@ class World:
         
         return True
 
+    def _is_base_module_def(self, module_def: dict) -> bool:
+        path = str(module_def.get("level_model", "")).replace("\\", "/").lower()
+        name = os.path.splitext(os.path.basename(path))[0]
+        return name == "base" or name.endswith("_base") or "base" in name.replace("-", "_").split("_")
+
+    def _find_base_module_def(self, module_defs: list[dict]) -> dict | None:
+        for module_def in module_defs:
+            if self._is_base_module_def(module_def):
+                return module_def
+        return None
+
     def recompute_bounds(self):
         self._min_bound, self._max_bound = self.level_root.get_tight_bounds()
+        self._update_end_walls()
     
     def setLimit(self) -> tuple[float, float]:
         if self._min_bound is None or self._max_bound is None:
@@ -151,3 +182,43 @@ class World:
             return (-10.0, 10.0)
 
         return float(self._min_bound.x), float(self._max_bound.x)
+
+    def _setup_end_walls(self):
+        if self._min_bound is None or self._max_bound is None:
+            return
+        if self.end_wall_nps:
+            self._update_end_walls()
+            return
+        for name in ("level_start_wall", "level_end_wall"):
+            wall_node = BulletRigidBodyNode(name)
+            wall_node.setMass(0)
+            wall_node.addShape(
+                BulletBoxShape(
+                    Vec3(
+                        END_WALL_THICKNESS * 0.5,
+                        END_WALL_Y_HALF_EXTENT,
+                        END_WALL_HALF_HEIGHT,
+                    )
+                )
+            )
+            wall_np = self.render.attachNewNode(wall_node)
+            wall_np.hide()
+            self.physics.attach(wall_node, wall_np)
+            self.end_wall_nps.append(wall_np)
+        self._update_end_walls()
+
+    def _update_end_walls(self):
+        if self._min_bound is None or self._max_bound is None or len(self.end_wall_nps) < 2:
+            return
+        center_z = float((self._min_bound.z + self._max_bound.z) * 0.5)
+        wall_specs = (
+            (self.end_wall_nps[0], float(self._min_bound.x) - END_WALL_THICKNESS * 0.5),
+            (self.end_wall_nps[1], float(self._max_bound.x) + END_WALL_THICKNESS * 0.5),
+        )
+        for wall_np, x in wall_specs:
+            wall_np.setPos(x, 0, center_z)
+            wall_np.hide()
+            if hasattr(wall_np.node(), "setTransformDirty"):
+                wall_np.node().setTransformDirty()
+            if hasattr(wall_np.node(), "setActive"):
+                wall_np.node().setActive(True)

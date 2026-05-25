@@ -19,7 +19,7 @@ from assets.PhysicsManager import PhysicsManager
 from direct.showbase import DirectObject
 
 class Character(DirectObject.DirectObject):
-    def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 5)):
+    def __init__(self, config: Config, render, loader, physics: PhysicsManager, start_pos: Vec3 = Vec3(0, 0, 15)):
         self.config = config
         self.render = render
         self.loader = loader
@@ -55,7 +55,9 @@ class Character(DirectObject.DirectObject):
         self.is_moving = False
         self.is_jumping = False
         self.is_attacking = False
+        self.attack_id = 0
         self._remote_attack_latched = False
+        self._remote_attack_id = 0
         self._remote_jump_latched = False
         self.jump_buffer_timer = 0.0
         self.jump_buffer_window = 0.14
@@ -131,20 +133,54 @@ class Character(DirectObject.DirectObject):
             node.removeNode()
         self.ray_node[idx] = self.render.attachNewNode(self.ray_vis[idx].create())
 
-    def perform_attack(self):
-        self._play_attack_animation()
+    def perform_attack(self, restart: bool = False, reverse_if_midpoint: bool = False) -> bool:
+        if not self.ATTACK_ANIM:
+            self.attack_id += 1
+            return True
+        if not self._play_attack_animation(restart=restart, reverse_if_midpoint=reverse_if_midpoint):
+            return False
+        self.attack_id += 1
+        return True
 
-    def _play_attack_animation(self):
+    def _get_attack_frame(self) -> tuple[int, int]:
+        if not self.ATTACK_ANIM:
+            return 0, 0
+        ctrl = self.actor.getAnimControl(self.ATTACK_ANIM)
+        if not ctrl:
+            return 0, 0
+        return int(ctrl.getFrame()), max(1, int(ctrl.getNumFrames()))
+
+    def _play_attack_animation(self, restart: bool = False, reverse_if_midpoint: bool = False) -> bool:
+        start_frame = None
+        end_frame = None
         if self.is_attacking:
-            return
+            if not restart:
+                return False
+            if reverse_if_midpoint:
+                current_frame, total_frames = self._get_attack_frame()
+                if current_frame < total_frames * 0.5:
+                    return False
+                start_frame = current_frame
+                end_frame = 0
+            attack_seq = getattr(self, "attack_seq", None)
+            if attack_seq:
+                try:
+                    attack_seq.pause()
+                except Exception:
+                    pass
 
         if not self.ATTACK_ANIM:
-            return
+            return False
 
         self.is_attacking = True
         self.actor.stop()
 
-        attack_interval = ActorInterval(self.actor, self.ATTACK_ANIM)
+        attack_interval = ActorInterval(
+            self.actor,
+            self.ATTACK_ANIM,
+            startFrame=start_frame,
+            endFrame=end_frame,
+        )
 
         def finish():
             self.is_attacking = False
@@ -155,6 +191,7 @@ class Character(DirectObject.DirectObject):
 
         self.attack_seq = Sequence(attack_interval, Func(finish))
         self.attack_seq.start()
+        return True
 
     def get_network_anim_state(self) -> dict[str, bool]:
         vel = self.node.getLinearVelocity()
@@ -163,12 +200,20 @@ class Character(DirectObject.DirectObject):
             "moving": moving,
             "jumping": self.is_jumping,
             "attacking": self.is_attacking,
+            "attack_id": self.attack_id,
         }
 
-    def apply_remote_animation(self, moving: bool, attacking: bool, jumping: bool):
+    def apply_remote_animation(self, moving: bool, attacking: bool, jumping: bool, attack_id: int = 0):
         self.is_moving = moving
-        if attacking and not self._remote_attack_latched:
-            self._play_attack_animation()
+        if attack_id > self._remote_attack_id:
+            should_play_attack = attacking or self._remote_attack_id > 0
+            if should_play_attack:
+                if self._play_attack_animation(restart=True, reverse_if_midpoint=self.is_attacking):
+                    self._remote_attack_id = attack_id
+            else:
+                self._remote_attack_id = attack_id
+        elif attacking and not self._remote_attack_latched:
+            self._play_attack_animation(restart=True)
         self._remote_attack_latched = attacking
 
         jump_started = jumping and not self._remote_jump_latched
