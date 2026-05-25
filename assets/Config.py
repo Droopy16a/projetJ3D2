@@ -20,6 +20,13 @@ class Config:
     module_count: int = 7
     module_spacing: float = 0.2
     module_seed: int | None = None
+    brightness: float = 1.0
+    waiting_room_enabled: bool = True
+    waiting_room_model: str = "./assets/models/modules/base.glb"
+    waiting_room_name: str = "Salle d'attente"
+    boss_room_enabled: bool = True
+    boss_room_model: str = "./assets/models/modules/base.glb"
+    boss_room_name: str = "Salle du boss"
 
     speed: float = 10.0
     jump_base: float = 7.0

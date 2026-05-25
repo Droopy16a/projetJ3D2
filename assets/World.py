@@ -96,8 +96,15 @@ class World:
         module_count = max(1, int(self.c.module_count))
         current_x = 0.0
 
-        for _ in range(module_count):
-            module_def = rng.choice(module_defs)
+        def add_module(
+            module_def: dict,
+            locked: bool = False,
+            locked_position: str | None = None,
+            is_waiting_room: bool = False,
+            is_boss_room: bool = False,
+        ):
+            nonlocal current_x
+
             path = module_def["level_model"]
             panda_path = Filename.fromOsSpecific(path)
             panda_path.makeTrueCase()
@@ -127,16 +134,36 @@ class World:
             self.module_meta.append(
                 {
                     "path": path,
-                    "name": os.path.basename(path),
+                    "name": module_def.get("name", os.path.basename(path)),
                     "def": module_def,
                     "min_bound": min_bound,
                     "max_bound": max_bound,
                     "width": width,
                     "center_offset": center_offset,
                     "base_z": float(module.getZ()),
+                    "locked": locked,
+                    "locked_position": locked_position,
+                    "is_waiting_room": is_waiting_room,
+                    "is_boss_room": is_boss_room,
                 }
             )
             current_x += width + self.module_spacing
+
+        if getattr(self.c, "waiting_room_enabled", True):
+            waiting_room_def = dict(module_defs[0])
+            waiting_room_def["level_model"] = getattr(self.c, "waiting_room_model", waiting_room_def["level_model"])
+            waiting_room_def["name"] = getattr(self.c, "waiting_room_name", "Salle d'attente")
+            add_module(waiting_room_def, locked=True, locked_position="start", is_waiting_room=True)
+
+        for _ in range(module_count):
+            module_def = rng.choice(module_defs)
+            add_module(module_def)
+
+        if getattr(self.c, "boss_room_enabled", True):
+            boss_room_def = dict(module_defs[0])
+            boss_room_def["level_model"] = getattr(self.c, "boss_room_model", boss_room_def["level_model"])
+            boss_room_def["name"] = getattr(self.c, "boss_room_name", "Salle du boss")
+            add_module(boss_room_def, locked=True, locked_position="end", is_boss_room=True)
 
         self.level_model = self.level_root
         

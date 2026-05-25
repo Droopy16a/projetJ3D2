@@ -56,6 +56,7 @@ NETWORK_PREDICTION_LIMIT = 0.18
 NETWORK_MOVE_SPEED = 0.25
 NETWORK_MOVE_DIST = 0.06
 CAMERA_SMOOTHING = 10.0
+FREE_CAMERA_SPEED = 18.0
 ATTACK_INPUT_BUFFER = 0.14
 HITSTOP_DURATION = 0.045
 COMBO_WINDOW = 0.52
@@ -69,6 +70,9 @@ AI_ATTACK_COOLDOWN = 1.05
 SPAWN_COOLDOWN = 1.75
 ATTACK_RANGE = 2.8
 MAX_ACTIVE_MOBS = 6
+PREP_PHASE_DURATION = 60.0
+WAITING_ROOM_EXIT_PADDING = 1.0
+BOSS_ROOM_PADDING = 1.0
 
 HERO_MAX_HP = 130
 BOSS_MAX_HP = 220
@@ -123,6 +127,7 @@ class Game(ShowBase):
         self.camera.setPos(0, -40, 6)
         self.camera.setHpr(0, 0, 0)
         self._setup_lighting()
+        self._setup_brightness_overlay()
         # self._setup_parallax_background()
 
         self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
@@ -159,6 +164,10 @@ class Game(ShowBase):
         self.hero_hp = HERO_MAX_HP
         self.boss_hp = BOSS_MAX_HP
         self.boss_phase_unlocked = False
+        self.prep_phase_start_time: float | None = None
+        self.prep_phase_duration = PREP_PHASE_DURATION
+        self.prep_phase_active = False
+        self.prep_phase_announced_done = False
         self.winner: str | None = None
 
         self.last_attack_times = {"hero": 0.0, "boss": 0.0, "mob": 0.0}
@@ -172,6 +181,8 @@ class Game(ShowBase):
         self.attack_buffer_until = 0.0
         self.hitstop_remaining = 0.0
         self.camera_follow_x = self.camera.getX()
+        self.free_camera_keys = {key: False for key in ("left", "right", "up", "down")}
+        self.free_camera_pos = Vec3(self.camera.getX(), self.camera.getY(), self.camera.getZ())
 
         self.websocket = None
         self._event_loop = None
@@ -199,6 +210,14 @@ class Game(ShowBase):
             self.accept(str(slot), self.select_control_slot, [slot])
         self.accept("b", self.select_control_boss)
         self.accept("0", self.select_control_boss)
+        self.accept("arrow_left", self.set_free_camera_key, ["left", True])
+        self.accept("arrow_left-up", self.set_free_camera_key, ["left", False])
+        self.accept("arrow_right", self.set_free_camera_key, ["right", True])
+        self.accept("arrow_right-up", self.set_free_camera_key, ["right", False])
+        self.accept("arrow_up", self.set_free_camera_key, ["up", True])
+        self.accept("arrow_up-up", self.set_free_camera_key, ["up", False])
+        self.accept("arrow_down", self.set_free_camera_key, ["down", True])
+        self.accept("arrow_down-up", self.set_free_camera_key, ["down", False])
         self._ui_consumed_click = False
         self.accept("mouse1", self._on_mouse1)
         self.accept("mouse1-up", self._on_mouse1_up)
@@ -241,6 +260,15 @@ class Game(ShowBase):
         # fog.setColor(0.06, 0.08, 0.06)
         # fog.setExpDensity(0.016)
         # self.render.setFog(fog)
+
+    def _setup_brightness_overlay(self):
+        dim_alpha = max(0.0, min(0.45, 1.0 - float(getattr(self.game_config, "brightness", 1.0))))
+        self.brightness_overlay = DirectFrame(
+            parent=self.render2d,
+            frameColor=(0, 0, 0, dim_alpha),
+            frameSize=(-1, 1, -1, 1),
+        )
+        self.brightness_overlay.setTransparency(TransparencyAttrib.MAlpha)
 
     def _setup_parallax_background(self):
         self.parallax_root = self.render.attachNewNode("parallax_root")
@@ -513,6 +541,8 @@ class Game(ShowBase):
             room.model = self.editor_canvas.attachNewNode(card_maker.generate())
             room.model.setPos(start_x + i * 1.0, 0, 0.0)
             self._apply_editor_room_style(room, meta, i)
+            if meta.get("locked"):
+                room.model.setColorScale(0.7, 0.9, 1.0, 1.0)
             self.editor_dungeon.add_room(room)
             self.editor_room_to_module[room] = {"node": module, "meta": meta}
             self.editor_module_to_room[id(module)] = room
@@ -601,10 +631,23 @@ class Game(ShowBase):
         local_z = (az - root_pos.z - canvas_pos.z) / self.editor_scale
         return Vec3(local_x, 0, local_z)
 
+    def _is_editor_room_locked(self, room: Room) -> bool:
+        return bool(self.editor_room_to_module.get(room, {}).get("meta", {}).get("locked", False))
+
+    def _editor_room_sort_key(self, room: Room) -> tuple[int, float]:
+        meta = self.editor_room_to_module.get(room, {}).get("meta", {})
+        locked_position = meta.get("locked_position")
+        if locked_position == "start":
+            return (0, room.model.getX())
+        if locked_position == "end":
+            return (2, room.model.getX())
+        return (1, room.model.getX())
+
     def _boss_editor_handle_click(self) -> bool:
         if (
             not self.editor_enabled
             or self.player_id != 1
+            or not self._can_boss_edit_dungeon()
             or self.editor_root.isHidden()
             or not self.editor_expanded
         ):
@@ -616,6 +659,9 @@ class Game(ShowBase):
             rx = room.model.getX()
             rz = room.model.getZ()
             if abs(pos.x - rx) <= self.editor_room_half_w and abs(pos.z - rz) <= self.editor_room_half_h:
+                if self._is_editor_room_locked(room):
+                    self._set_status(f"{room.name} est verrouillee.")
+                    return True
                 self.editor_dragged_room = room
                 self.editor_drag_offset = room.model.getPos() - pos
                 return True
@@ -624,11 +670,17 @@ class Game(ShowBase):
     def _on_editor_panel_press(self, _event=None):
         if self.player_id != 1 or not self.editor_enabled or not self.editor_expanded:
             return
+        if not self._can_boss_edit_dungeon():
+            self._set_status("Le temps de preparation est termine.")
+            return
         self._ui_consumed_click = True
         self._boss_editor_handle_click()
 
     def _on_editor_tab_press(self, _event=None):
         if self.player_id != 1 or not self.editor_enabled:
+            return
+        if not self._can_boss_edit_dungeon():
+            self._set_status("Le donjon est verrouille.")
             return
         self._ui_consumed_click = True
         self.editor_expanded = not self.editor_expanded
@@ -668,6 +720,10 @@ class Game(ShowBase):
     def _boss_editor_release(self):
         if not self.editor_dragged_room:
             return
+        if not self._can_boss_edit_dungeon():
+            self.editor_dragged_room = None
+            self._set_status("Le donjon est verrouille.")
+            return
         self.editor_dungeon.link_rooms(self.editor_dragged_room, self.editor_canvas)
         if self._editor_has_links():
             self._sync_world_from_editor()
@@ -684,7 +740,7 @@ class Game(ShowBase):
         if not self.editor_enabled:
             return
         levels = self._compute_editor_levels()
-        ordered_rooms = sorted(self.editor_dungeon.rooms, key=lambda r: r.model.getX())
+        ordered_rooms = sorted(self.editor_dungeon.rooms, key=self._editor_room_sort_key)
         current_x = 0.0
         for room in ordered_rooms:
             mapping = self.editor_room_to_module.get(room)
@@ -709,7 +765,7 @@ class Game(ShowBase):
         rooms = list(self.editor_dungeon.rooms)
         if not rooms:
             return {}
-        rooms.sort(key=lambda r: r.model.getX())
+        rooms.sort(key=self._editor_room_sort_key)
 
         levels: dict[Room, float] = {}
         current_level = 0.0
@@ -746,9 +802,15 @@ class Game(ShowBase):
             self._ui_consumed_click = False
             return
         if self.player_id == 1 and self.editor_enabled and self._is_mouse_over_tab():
+            if not self._can_boss_edit_dungeon():
+                self._set_status("Le donjon est verrouille.")
+                return
             self.editor_expanded = not self.editor_expanded
             return
         if self.player_id == 1 and self._is_mouse_over_editor():
+            if not self._can_boss_edit_dungeon():
+                self._set_status("Le temps de preparation est termine.")
+                return
             if self._boss_editor_handle_click():
                 return
             return
@@ -759,7 +821,7 @@ class Game(ShowBase):
             self._boss_editor_release()
 
     def _task_boss_editor_drag(self, task):
-        if self.editor_dragged_room and self.player_id == 1:
+        if self.editor_dragged_room and self.player_id == 1 and self._can_boss_edit_dungeon():
             pos = self._get_editor_mouse_pos()
             if pos is not None:
                 self.editor_dragged_room.model.setPos(pos + self.editor_drag_offset)
@@ -893,12 +955,13 @@ class Game(ShowBase):
             mayChange=True,
             parent=self.right_panel,
         )
+        self.mob_count_text.hide()
 
         self.action_panel = DirectFrame(
             parent=self.ui_root,
             frameColor=panel_color,
             frameSize=(-0.7, 0.7, -0.15, 0),
-            pos=(0, 0, -0.88),
+            pos=(0, 0, -0.82),
         )
         self.action_panel.setTransparency(TransparencyAttrib.MAlpha)
         self.control_text = OnscreenText(
@@ -1153,6 +1216,105 @@ class Game(ShowBase):
             self.status_panel.setAlphaScale(0.9 * alpha)
             self.status_text.setAlphaScale(alpha)
 
+    def _start_prep_phase(self):
+        self.prep_phase_start_time = time.monotonic()
+        self.prep_phase_active = True
+        self.prep_phase_announced_done = False
+
+    def _get_prep_remaining(self) -> float:
+        if not self.prep_phase_active or self.prep_phase_start_time is None:
+            return 0.0
+        elapsed = time.monotonic() - self.prep_phase_start_time
+        return max(0.0, self.prep_phase_duration - elapsed)
+
+    def _can_boss_edit_dungeon(self) -> bool:
+        return self.player_id == 1 and self.editor_enabled and self.prep_phase_active
+
+    def _end_prep_phase(self, announce: bool = True):
+        if not self.prep_phase_active and self.prep_phase_announced_done:
+            return
+        self.prep_phase_active = False
+        self.prep_phase_announced_done = True
+        self.editor_dragged_room = None
+        self.editor_expanded = False
+        if announce:
+            if self.player_id == 0:
+                self._set_status("La porte est ouverte. Explore le donjon.")
+            elif self.player_id == 1:
+                self._set_status("Temps ecoule. Le donjon est verrouille.")
+
+    def _update_prep_phase(self):
+        if not self.prep_phase_active:
+            return
+        if self._get_prep_remaining() <= 0.0:
+            self._end_prep_phase(announce=True)
+
+    def _get_waiting_room_exit_x(self) -> float | None:
+        for node, meta in zip(getattr(self.world, "module_nodes", []), getattr(self.world, "module_meta", [])):
+            if not meta.get("is_waiting_room"):
+                continue
+            max_bound = meta.get("max_bound")
+            if max_bound is None:
+                return None
+            return float(node.getX() + max_bound.x - WAITING_ROOM_EXIT_PADDING)
+        return None
+
+    def _get_boss_room_bounds(self) -> tuple[float, float] | None:
+        for node, meta in zip(getattr(self.world, "module_nodes", []), getattr(self.world, "module_meta", [])):
+            if not meta.get("is_boss_room"):
+                continue
+            min_bound = meta.get("min_bound")
+            max_bound = meta.get("max_bound")
+            if min_bound is None or max_bound is None:
+                return None
+            left = float(node.getX() + min_bound.x + BOSS_ROOM_PADDING)
+            right = float(node.getX() + max_bound.x - BOSS_ROOM_PADDING)
+            return (min(left, right), max(left, right))
+        return None
+
+    def _has_hero_entered_boss_room(self) -> bool:
+        if self.boss_phase_unlocked:
+            return True
+        if not self.hero:
+            return False
+        bounds = self._get_boss_room_bounds()
+        if bounds is None:
+            return self.hero.np.getX() >= self.goal_x
+        return self.hero.np.getX() >= bounds[0]
+
+    def _boss_should_use_free_camera(self) -> bool:
+        return self.player_id == 1 and not self.winner and not self._has_hero_entered_boss_room()
+
+    def _clamp_boss_to_boss_room(self):
+        if self.player_id != 1 or not self.boss:
+            return
+        bounds = self._get_boss_room_bounds()
+        if bounds is None:
+            return
+        left, right = bounds
+        x = self.boss.np.getX()
+        clamped_x = max(left, min(x, right))
+        if clamped_x == x:
+            return
+        self.boss.np.setX(clamped_x)
+        vel = self.boss.node.getLinearVelocity()
+        if (x < left and vel.x < 0.0) or (x > right and vel.x > 0.0):
+            vel.setX(0.0)
+            self.boss.node.setLinearVelocity(vel)
+
+    def _keep_hero_in_waiting_room(self):
+        if self.player_id != 0 or not self.prep_phase_active or not self.hero:
+            return
+        exit_x = self._get_waiting_room_exit_x()
+        if exit_x is None or self.hero.np.getX() <= exit_x:
+            return
+
+        self.hero.np.setX(exit_x)
+        vel = self.hero.node.getLinearVelocity()
+        if vel.x > 0.0:
+            vel.setX(0.0)
+            self.hero.node.setLinearVelocity(vel)
+
     def _set_visible(self, key: str, widget, visible: bool):
         previous = self._ui_visible.get(key)
         if previous is visible:
@@ -1198,8 +1360,10 @@ class Game(ShowBase):
             role = "Connecting"
             control = "--"
 
-        right_hidden_for_editor = is_boss and self.editor_enabled and self.editor_expanded
-        show_editor_tab = is_boss and self.editor_enabled
+        prep_remaining = self._get_prep_remaining()
+        prep_seconds = int(math.ceil(prep_remaining))
+        right_hidden_for_editor = is_boss and self.editor_enabled and self.editor_expanded and self._can_boss_edit_dungeon()
+        show_editor_tab = is_boss and self.editor_enabled and self._can_boss_edit_dungeon()
         show_editor_root = show_editor_tab and self.editor_expanded
 
         self._set_visible("hero_ui_root", self.hero_ui_root, is_hero)
@@ -1225,18 +1389,27 @@ class Game(ShowBase):
         if self.winner:
             objective = "Game over."
         elif is_hero:
-            if self.boss_phase_unlocked:
+            if self.prep_phase_active:
+                objective = f"Preparation: wait {prep_seconds}s before leaving the room."
+            elif self.boss_phase_unlocked:
                 objective = "Objective: defeat the boss."
             else:
                 objective = f"Objective: reach X >= {self.goal_x:.1f}, then defeat the boss."
         elif is_boss:
-            objective = "Objective: kill the hero before they kill you."
+            if self.prep_phase_active:
+                objective = f"Preparation: edit the dungeon ({prep_seconds}s left)."
+            elif self._boss_should_use_free_camera():
+                objective = "Observe the hero with arrow keys. F=place mobs."
+            else:
+                objective = "Objective: kill the hero before they kill you."
         else:
             objective = "Waiting for role assignment."
         self._set_text_if_changed("objective_label", self.objective_label, objective)
 
         if self.winner:
             phase_text = f"{self.winner.title()} wins!"
+        elif self.prep_phase_active and not is_boss:
+            phase_text = f"Preparation: {prep_seconds}s"
         elif self.boss_phase_unlocked:
             phase_text = "Phase 2: boss vulnerable"
         else:
@@ -1257,6 +1430,7 @@ class Game(ShowBase):
 
         mob_count = len(self.local_mobs) if is_boss else len(self.remote_mobs)
         self._set_text_if_changed("mob_count_text", self.mob_count_text, f"Mobs: {mob_count}/{MAX_ACTIVE_MOBS}")
+        self.mob_count_text.hide()
 
         attack_cd = self._get_current_attack_cooldown()
         cd_key = self._get_attack_cooldown_key()
@@ -1327,14 +1501,17 @@ class Game(ShowBase):
         boss_start = Vec3(self.max_x - 5.0, 0, 7)
 
         self.hero = Character(self.game_config, self.render, self.loader, self.physics, start_pos=hero_start)
+        self._start_prep_phase()
         if self.player_id == 0:
             self.boss = Mob(self.game_config, self.render, self.loader, self.physics, boss_start, mode="REMOTE")
             self.controlled_entity = "hero"
-            self._set_status("Hero ready. Reach the end to unlock the boss.")
+            self._set_status("Preparation: attends que la porte s'ouvre.")
         else:
             self.boss = Mob(self.game_config, self.render, self.loader, self.physics, boss_start, mode="PLAYER")
             self.controlled_entity = "boss"
-            self._set_status("Boss ready. F=spawn (limit/cd), TAB=cycle, 1-6=pick mob, B=boss.")
+            self.boss.set_mode("IDLE")
+            self.free_camera_pos = self.camera.getPos(self.render)
+            self._set_status("Preparation: modifie le donjon avant le depart.")
 
         self._update_hud()
 
@@ -1561,6 +1738,8 @@ class Game(ShowBase):
         self.hero_hp = int(payload.get("hero_hp", self.hero_hp))
         if bool(payload.get("boss_phase_unlocked", False)):
             self._unlock_boss_phase(announce=False)
+        if payload.get("prep_phase_active") is False:
+            self._end_prep_phase(announce=False)
 
     def _apply_remote_boss_state(self, payload: dict[str, Any]):
         if not self.boss:
@@ -1580,6 +1759,8 @@ class Game(ShowBase):
         self.boss_hp = int(payload.get("boss_hp", self.boss_hp))
         if bool(payload.get("boss_phase_unlocked", False)):
             self._unlock_boss_phase(announce=False)
+        if payload.get("prep_phase_active") is False:
+            self._end_prep_phase(announce=False)
 
         mobs = payload.get("mobs", [])
         if isinstance(mobs, list):
@@ -1679,6 +1860,8 @@ class Game(ShowBase):
                 },
                 "hero_hp": self.hero_hp,
                 "boss_phase_unlocked": self.boss_phase_unlocked,
+                "prep_phase_active": self.prep_phase_active,
+                "prep_remaining": self._get_prep_remaining(),
             }
 
         boss_anim = self.boss.get_network_anim_state()
@@ -1708,6 +1891,8 @@ class Game(ShowBase):
             },
             "boss_hp": self.boss_hp,
             "boss_phase_unlocked": self.boss_phase_unlocked,
+            "prep_phase_active": self.prep_phase_active,
+            "prep_remaining": self._get_prep_remaining(),
             "controlled": self.controlled_entity,
             "mobs": mobs_payload,
         }
@@ -1737,6 +1922,8 @@ class Game(ShowBase):
         if self.boss_phase_unlocked:
             return
         self.boss_phase_unlocked = True
+        if self.player_id == 1 and self.boss and self.controlled_entity == "boss":
+            self.boss.set_mode("PLAYER")
         self._set_status("Boss is now vulnerable.")
         if announce:
             self._queue_message({"type": "phase", "unlocked": True})
@@ -2045,9 +2232,13 @@ class Game(ShowBase):
             return
         self.last_spawn_time = now
 
-        source_np = self._get_controlled_np() or self.boss.np
-        x = source_np.getX() + random.uniform(-1.5, 1.5)
-        z = source_np.getZ() + 0.5
+        if self._boss_should_use_free_camera():
+            x = self.camera.getX() + random.uniform(-1.5, 1.5)
+            z = self.camera.getZ() - 3.5
+        else:
+            source_np = self._get_controlled_np() or self.boss.np
+            x = source_np.getX() + random.uniform(-1.5, 1.5)
+            z = source_np.getZ() + 0.5
         mob_id = self.next_mob_id
         self.next_mob_id += 1
 
@@ -2083,6 +2274,13 @@ class Game(ShowBase):
 
     def _set_controlled_entity(self, entity: str | int):
         if self.player_id != 1 or not self.boss:
+            return
+
+        if entity == "boss" and self._boss_should_use_free_camera():
+            self.controlled_entity = "boss"
+            self.boss.set_mode("IDLE")
+            for mob in self.local_mobs.values():
+                mob.set_mode("AI")
             return
 
         if entity != "boss" and entity not in self.local_mobs:
@@ -2218,6 +2416,9 @@ class Game(ShowBase):
         return task.cont
 
     def _update_camera_follow(self, dt: float):
+        if self._update_free_camera(dt):
+            return
+
         target_np = self._get_controlled_np()
         if not target_np:
             return
@@ -2249,12 +2450,35 @@ class Game(ShowBase):
         self._hud_time_accumulator = 0.0
         self._update_hud()
 
+    def set_free_camera_key(self, key: str, value: bool):
+        if key in self.free_camera_keys:
+            self.free_camera_keys[key] = value
+
+    def _update_free_camera(self, dt: float) -> bool:
+        if not self._boss_should_use_free_camera():
+            return False
+
+        move_x = float(self.free_camera_keys["right"]) - float(self.free_camera_keys["left"])
+        move_z = float(self.free_camera_keys["up"]) - float(self.free_camera_keys["down"])
+        self.free_camera_pos = self.camera.getPos(self.render)
+        self.free_camera_pos.setX(
+            max(self.min_x, min(self.free_camera_pos.x + move_x * FREE_CAMERA_SPEED * dt, self.max_x))
+        )
+        self.free_camera_pos.setY(self.camera.getY())
+        self.free_camera_pos.setZ(max(3.0, min(self.free_camera_pos.z + move_z * FREE_CAMERA_SPEED * dt, 26.0)))
+        self.camera.setPos(self.free_camera_pos)
+        self.camera_follow_x = self.free_camera_pos.x
+        return True
+
     def _task_update(self, task):
         dt = globalClock.getDt()
+        self._update_prep_phase()
         self._process_attack_buffer()
 
         if self.hitstop_remaining > 0.0:
             self.hitstop_remaining = max(0.0, self.hitstop_remaining - dt)
+            self._keep_hero_in_waiting_room()
+            self._clamp_boss_to_boss_room()
             self._update_vfx(dt)
             self._update_parallax(dt)
             self._update_status(dt)
@@ -2263,8 +2487,10 @@ class Game(ShowBase):
 
         if self.hero:
             self.hero.update(dt)
+            self._keep_hero_in_waiting_room()
         if self.boss:
             self.boss.update(dt)
+            self._clamp_boss_to_boss_room()
 
         for mob in self.local_mobs.values():
             mob.update(dt)
@@ -2274,6 +2500,8 @@ class Game(ShowBase):
         self._update_remote_motion(dt)
 
         if self.player_id == 1:
+            if not self.boss_phase_unlocked and self._has_hero_entered_boss_room():
+                self._unlock_boss_phase(announce=False)
             self._update_ai_attacks()
 
         if self.player_id == 0 and self.hero and not self.boss_phase_unlocked and self.hero.np.getX() >= self.goal_x:
