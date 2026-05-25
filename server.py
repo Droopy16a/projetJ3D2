@@ -1,15 +1,46 @@
 import asyncio
 import json
 import os
+import socket
 from typing import Any
 
 import websockets
 
 
 PORT = int(os.getenv("DUNGEON_ARISE_PORT", "8765"))
+DISCOVERY_PORT = 5000
 ROLE_HERO = 0
 ROLE_BOSS = 1
 clients: dict[int, Any] = {}
+
+
+def get_local_ip():
+    """Get the local WiFi IP address of this machine."""
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        sock.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+async def broadcast_discovery(local_ip: str):
+    """Periodically broadcast server presence on the local network."""
+    loop = asyncio.get_event_loop()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    
+    discovery_message = f"DUNGEON_SERVER:{local_ip}:{PORT}".encode()
+    
+    while True:
+        try:
+            await loop.sock_sendto(sock, discovery_message, ("<broadcast>", DISCOVERY_PORT))
+        except Exception:
+            pass
+        await asyncio.sleep(1)
 
 
 def get_available_role() -> int | None:
@@ -69,8 +100,20 @@ async def handler(ws):
 
 
 async def main():
+    local_ip = get_local_ip()
     async with websockets.serve(handler, "0.0.0.0", PORT):
-        print(f"Server running on ws://0.0.0.0:{PORT}")
+        print(f"\n{'='*50}")
+        print(f"Server running!")
+        print(f"Local IP: {local_ip}")
+        print(f"Port: {PORT}")
+        print(f"WebSocket URL: ws://{local_ip}:{PORT}")
+        print(f"{'='*50}\n")
+        print(f"Broadcasting server discovery on local network...")
+        print(f"Clients will auto-connect automatically!\n")
+        
+        # Start broadcasting server presence
+        asyncio.create_task(broadcast_discovery(local_ip))
+        
         await asyncio.Future()
 
 
