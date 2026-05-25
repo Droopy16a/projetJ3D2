@@ -3,8 +3,6 @@ from direct.gui.DirectGui import DirectButton, DirectFrame, OnscreenText
 from panda3d.core import TransparencyAttrib, TextNode
 from panda3d.core import loadPrcFileData
 from direct.gui import DirectGuiGlobals as DGG
-from game_client import Game
-
 loadPrcFileData("", "win-size 1920 1080")
 
 class Menu(ShowBase):
@@ -12,6 +10,7 @@ class Menu(ShowBase):
         super().__init__()
 
         self.disableMouse()
+        self.start_requested = False
 
         self.blue_glow = (0.45, 0.85, 1.0, 0.9)
         self.soft_white = (1, 1, 1, 0.9)
@@ -29,7 +28,7 @@ class Menu(ShowBase):
         self.bg.setTransparency(TransparencyAttrib.MAlpha)
         self.perso.setTransparency(TransparencyAttrib.MAlpha)
 
-        self.bg["image"] = "assets/images/background.jpg"
+        self.bg["image"] = "assets/images/menu_background.jpg"
         self.perso["image"] = "assets/images/perso.png"
 
         self.bg.setScale(1.02)
@@ -60,16 +59,17 @@ class Menu(ShowBase):
         self.current_index = 0
 
         self.make_button("CONTINUE", 0.5, 0.15, self.start_game)
-        self.make_button("NEW GAME", 0.5, -0.03, self.start_game)
-        self.make_button("OPTIONS", 0.5, -0.21, self.show_options)
-        self.make_button("QUIT", 0.5, -0.39, self.exit_game)
+        # self.make_button("NEW GAME", 0.5, -0.03, self.start_game)
+        self.make_button("OPTIONS", 0.5, -0.03, self.show_options)
+        # self.make_button("OPTIONS", 0.5, -0.21, self.show_options)
+        self.make_button("QUIT", 0.5, -0.21, self.exit_game)
+        # self.make_button("QUIT", 0.5, -0.39, self.exit_game)
 
         self.update_highlight()
 
         self.accept("arrow_up", self.navigate, [-1])
         self.accept("arrow_down", self.navigate, [1])
         self.accept("enter", self.activate)
-
 
     def make_button(self, text, x, y, command):
         btn = DirectButton(
@@ -129,16 +129,24 @@ class Menu(ShowBase):
         return task.cont
 
     def start_game(self):
-        self.destroy()
-        game = Game()
-        game.run()
+        self.start_requested = True
+        self.taskMgr.stop()
 
     def show_options(self):
         print("Opening options...")
 
     def exit_game(self):
         print("Exiting...")
-        self.userExit()
+        self.taskMgr.stop()
 
 
-Menu().run()
+if __name__ == "__main__":
+    menu = Menu()
+    menu.run()
+    start_requested = menu.start_requested
+    menu.destroy()
+    if start_requested:
+        from game_client import Game
+
+        game = Game()
+        game.run()

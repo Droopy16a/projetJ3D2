@@ -32,27 +32,29 @@ class Config:
     mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     cube_model: str = "./assets/models/box.glb"
     sword_model: str = "./assets/models/sword.glb"
-    boss_model : str = "./assets/models/mobAn.glb"
+    boss_model : str = "./assets/models/Boss_Roche.glb"
 
     levels: list = field(default_factory=lambda: [
         {
             "level_model": "./assets/models/modules/base.glb",
-            "ignore": ["ignore"],
-            "size": 2.0,
+            "ignore": ["ignore*"],
+            "size": 2.4,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         },
         {
             "level_model": "./assets/models/modules/stair_U.glb",
-            "ignore": ["ignore.001"],
-            "size": 2.0,
+            "ignore": ["ignore*", "Stairs*"],
+            "hitbox_include": ["collision*"],
+            "size": 2.4,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         },
         {
             "level_model": "./assets/models/modules/stair_D.glb",
-            "ignore": ["ignore.002"],
-            "size": 2.0,
+            "ignore": ["ignore*", "Stairs*"],
+            "hitbox_include": ["collision*"],
+            "size": 2.4,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         }

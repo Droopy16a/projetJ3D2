@@ -35,7 +35,9 @@ class Mob(DirectObject.DirectObject):
 
         self.is_attacking = False
         self.is_moving = False
+        self.attack_id = 0
         self._remote_attack_latched = False
+        self._remote_attack_id = 0
 
 
         shape = BulletCapsuleShape(0.75, 1.0, 2)
@@ -232,20 +234,49 @@ class Mob(DirectObject.DirectObject):
         if self.IDLE_ANIM and self._current_anim() != self.IDLE_ANIM:
             self._loop_anim(self.IDLE_ANIM)
 
-    def perform_attack(self, force: bool = False):
-        if self.mode != 'PLAYER' and not force:
-            return
+    def _get_attack_frame(self) -> tuple[int, int]:
+        if not self.actor or not self.ATTACK_ANIM:
+            return 0, 0
+        ctrl = self.actor.getAnimControl(self.ATTACK_ANIM)
+        if not ctrl:
+            return 0, 0
+        return int(ctrl.getFrame()), max(1, int(ctrl.getNumFrames()))
 
-        if self.is_attacking:
-            return
+    def perform_attack(self, force: bool = False, restart: bool = False, reverse_if_midpoint: bool = False) -> bool:
+        if self.mode != 'PLAYER' and not force:
+            return False
 
         if not self.ATTACK_ANIM:
-            return
+            self.attack_id += 1
+            return True
+
+        start_frame = None
+        end_frame = None
+        if self.is_attacking:
+            if not restart:
+                return False
+            if reverse_if_midpoint:
+                current_frame, total_frames = self._get_attack_frame()
+                if current_frame < total_frames * 0.5:
+                    return False
+                start_frame = current_frame
+                end_frame = 0
+            attack_seq = getattr(self, "attack_seq", None)
+            if attack_seq:
+                try:
+                    attack_seq.pause()
+                except Exception:
+                    pass
 
         self.is_attacking = True
         self._stop_anim()
 
-        attack_interval = ActorInterval(self.actor, self.ATTACK_ANIM)
+        attack_interval = ActorInterval(
+            self.actor,
+            self.ATTACK_ANIM,
+            startFrame=start_frame,
+            endFrame=end_frame,
+        )
 
         def finish():
             self.is_attacking = False
@@ -256,6 +287,8 @@ class Mob(DirectObject.DirectObject):
 
         self.attack_seq = Sequence(attack_interval, Func(finish))
         self.attack_seq.start()
+        self.attack_id += 1
+        return True
 
     def get_network_anim_state(self) -> dict[str, bool]:
         vel = self.node.getLinearVelocity()
@@ -263,12 +296,21 @@ class Mob(DirectObject.DirectObject):
         return {
             "moving": moving,
             "attacking": self.is_attacking,
+            "attack_id": self.attack_id,
         }
 
-    def apply_remote_animation(self, moving: bool, attacking: bool):
+    def apply_remote_animation(self, moving: bool, attacking: bool, attack_id: int = 0):
         self.is_moving = moving
-        if attacking:
-            self.perform_attack(force=True)
+        if attack_id > self._remote_attack_id:
+            should_play_attack = attacking or self._remote_attack_id > 0
+            if should_play_attack:
+                if self.perform_attack(force=True, restart=True, reverse_if_midpoint=self.is_attacking):
+                    self._remote_attack_id = attack_id
+            else:
+                self._remote_attack_id = attack_id
+        elif attacking and not self._remote_attack_latched:
+            self.perform_attack(force=True, restart=True)
+        self._remote_attack_latched = attacking
 
         if self.is_attacking:
             return
