@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import json
 import os
 import socket
@@ -26,20 +27,34 @@ def get_local_ip():
         return "127.0.0.1"
 
 
+def get_broadcast_addresses(local_ip: str) -> list[str]:
+    """Return broadcast destinations for the local subnet."""
+    result = ["<broadcast>"]
+    try:
+        network = ipaddress.ip_network(f"{local_ip}/24", strict=False)
+        result.append(str(network.broadcast_address))
+    except Exception:
+        result.append("255.255.255.255")
+    return result
+
+
 async def broadcast_discovery(local_ip: str):
     """Periodically broadcast server presence on the local network."""
     loop = asyncio.get_event_loop()
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind(("", 0))
     
     discovery_message = f"DUNGEON_SERVER:{local_ip}:{PORT}".encode()
-    
+    broadcast_addresses = get_broadcast_addresses(local_ip)
+
     while True:
-        try:
-            await loop.sock_sendto(sock, discovery_message, ("<broadcast>", DISCOVERY_PORT))
-        except Exception:
-            pass
+        for addr in broadcast_addresses:
+            try:
+                await loop.sock_sendto(sock, discovery_message, (addr, DISCOVERY_PORT))
+            except Exception:
+                pass
         await asyncio.sleep(1)
 
 
