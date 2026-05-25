@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import hashlib
 import os
 import random
-import socket
 import time
 import math
 from collections import deque
@@ -54,7 +54,6 @@ ConfigVariableString("bullet-filter-algorithm").setValue("groups-mask")
 
 DEFAULT_PORT = 8765
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_WORLD_SEED = 20260525
 NETWORK_UPDATE_INTERVAL = 0.033
 NETWORK_SMOOTHING = 18.0
 SNAP_DISTANCE = 6.0
@@ -140,7 +139,9 @@ class Game(ShowBase):
         self._setup_lighting()
         self._setup_ui_theme()
 
-        self._configure_network()
+        self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
+        self.ws_host = os.getenv("DUNGEON_ARISE_HOST", DEFAULT_HOST)
+        self.ws_uri = f"ws://{self.ws_host}:{self.PORT}"
 
         if self.game_config.module_seed is None:
             env_seed = os.getenv("DUNGEON_WORLD_SEED")
@@ -150,7 +151,8 @@ class Game(ShowBase):
                 except ValueError:
                     self.game_config.module_seed = None
             if self.game_config.module_seed is None:
-                self.game_config.module_seed = DEFAULT_WORLD_SEED
+                seed_src = f"{self.ws_host}:{self.PORT}"
+                self.game_config.module_seed = int(hashlib.sha256(seed_src.encode()).hexdigest()[:8], 16)
 
         self.physics = PhysicsManager(self.game_config.gravity, self.render)
         self.world = World(self.game_config, self.render, self.loader, self.physics, index=0)
@@ -276,62 +278,6 @@ class Game(ShowBase):
         # fog.setColor(0.06, 0.08, 0.06)
         # fog.setExpDensity(0.016)
         # self.render.setFog(fog)
-
-    def _configure_network(self):
-        self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
-        forced_host = os.getenv("DUNGEON_ARISE_HOST")
-        self.hosting_embedded_server = False
-
-        if forced_host:
-            self.ws_host = forced_host
-            self.ws_uri = f"ws://{self.ws_host}:{self.PORT}"
-            print(f"Network: using configured server {self.ws_uri}")
-            return
-
-        discovered = self._discover_lan_server()
-        if discovered:
-            self.ws_host, discovered_port = discovered
-            self.PORT = discovered_port
-            print(f"Network: discovered LAN server ws://{self.ws_host}:{self.PORT}")
-        else:
-            self.ws_host = DEFAULT_HOST
-            self.hosting_embedded_server = True
-            self._start_embedded_server()
-            print(f"Network: hosting LAN server on port {self.PORT}")
-
-        self.ws_uri = f"ws://{self.ws_host}:{self.PORT}"
-
-    def _discover_lan_server(self) -> tuple[str, int] | None:
-        try:
-            import server
-        except Exception:
-            return None
-
-        discovery_port = int(getattr(server, "DISCOVERY_PORT", 8766))
-        request = getattr(server, "DISCOVERY_REQUEST", b"DUNGEON_ARISE_DISCOVER_V1")
-        response_type = getattr(server, "DISCOVERY_RESPONSE_TYPE", "dungeon_arise_server")
-
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            sock.settimeout(0.18)
-            for _attempt in range(5):
-                try:
-                    sock.sendto(request, ("255.255.255.255", discovery_port))
-                    data, addr = sock.recvfrom(1024)
-                    payload = json.loads(data.decode("utf-8"))
-                except (OSError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if payload.get("type") != response_type:
-                    continue
-                return addr[0], int(payload.get("port", self.PORT))
-        return None
-
-    def _start_embedded_server(self):
-        try:
-            import server
-            server.start_server_thread(self.PORT)
-        except Exception as exc:
-            print(f"Network: could not start embedded server: {exc}")
 
     def _setup_ui_theme(self):
         self.ui_palette = {
@@ -1547,18 +1493,6 @@ class Game(ShowBase):
         left, right, bottom, top = self.editor_frame
         return left <= local_x <= right and bottom <= local_z <= top
 
-    def _is_mouse_over_boss_click_ui(self) -> bool:
-        if self.player_id != 1:
-            return False
-        if self.boss_inventory_open and self._is_mouse_over_boss_inventory():
-            return True
-        if self._is_mouse_over_widget(getattr(self, "boss_control_icon_outer", None)):
-            return True
-        for slot in getattr(self, "boss_mob_slots", []):
-            if self._is_mouse_over_widget(slot.get("root")):
-                return True
-        return False
-
     def _boss_editor_release(self):
         if not self.editor_dragged_room:
             return
@@ -1999,9 +1933,6 @@ class Game(ShowBase):
         if self.boss_inventory_open:
             if self._is_mouse_over_boss_inventory_mob_slot():
                 self._start_boss_inventory_mob_drag()
-            return
-        if self._is_mouse_over_boss_click_ui():
-            self._ui_consumed_click = False
             return
         if self.player_id == 1 and self._is_mouse_over_editor():
             if self._boss_editor_handle_click():
@@ -2665,7 +2596,6 @@ class Game(ShowBase):
             frame_size=(-0.062, 0.062, -0.062, 0.062),
         )
         self.boss_inventory_cooldown.setBin("fixed", 80)
-        self.boss_inventory_cooldown.bind(DGG.B1PRESS, self._on_boss_inventory_mob_press)
         self.boss_inventory_cooldown.hide()
         self.boss_inventory_mob_count = self._make_ui_text(
             text="",
