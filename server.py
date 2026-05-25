@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import ipaddress
 import json
 import os
@@ -38,6 +39,12 @@ def get_broadcast_addresses(local_ip: str) -> list[str]:
     return result
 
 
+def get_world_seed(local_ip: str) -> int:
+    """Derive the shared world seed from the server address."""
+    seed_src = f"{local_ip}:{PORT}"
+    return int(hashlib.sha256(seed_src.encode()).hexdigest()[:8], 16)
+
+
 async def broadcast_discovery(local_ip: str):
     """Periodically broadcast server presence on the local network."""
     loop = asyncio.get_event_loop()
@@ -46,7 +53,8 @@ async def broadcast_discovery(local_ip: str):
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
     sock.bind(("", 0))
     
-    discovery_message = f"DUNGEON_SERVER:{local_ip}:{PORT}".encode()
+    seed = get_world_seed(local_ip)
+    discovery_message = f"DUNGEON_SERVER:{local_ip}:{PORT}:{seed}".encode()
     broadcast_addresses = get_broadcast_addresses(local_ip)
 
     while True:
@@ -118,9 +126,11 @@ async def main():
     local_ip = get_local_ip()
     async with websockets.serve(handler, "0.0.0.0", PORT):
         print(f"\n{'='*50}")
+        seed = get_world_seed(local_ip)
         print(f"Server running!")
         print(f"Local IP: {local_ip}")
         print(f"Port: {PORT}")
+        print(f"World seed: {seed}")
         print(f"WebSocket URL: ws://{local_ip}:{PORT}")
         print(f"{'='*50}\n")
         print(f"Broadcasting server discovery on local network...")
