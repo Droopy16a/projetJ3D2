@@ -228,7 +228,6 @@ class World:
         """Create or position invisible walls to confine the boss base area and show them."""
         if not hasattr(self, "base_wall_nps"):
             self.base_wall_nps = []
-        # Create walls if missing
         if len(self.base_wall_nps) < 2:
             for name in ("boss_base_start_wall", "boss_base_end_wall"):
                 wall_node = BulletRigidBodyNode(name)

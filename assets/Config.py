@@ -15,6 +15,7 @@ class Config:
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
     debug_physics: bool = False
     debug_rays: bool = False
+    debug_kayou_hitbox: bool = True
     debug_hitbox_logs: bool = False
     use_modular_world: bool = True
     module_dir: str = "./assets/models/modules"
@@ -39,6 +40,11 @@ class Config:
     cube_model: str = "./assets/models/box.glb"
     sword_model: str = "./assets/models/sword.glb"
     boss_model : str = "./assets/models/Boss_Roche.glb"
+
+    hero_attack_range: float = 4.0
+    mob_attack_range: float = 4.0
+    kayou_attack_range: float = 6.0
+    boss_attack_range: float = 7.0
 
     levels: list = field(default_factory=lambda: [
         {

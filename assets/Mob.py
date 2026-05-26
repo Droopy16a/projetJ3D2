@@ -337,7 +337,7 @@ class Mob(DirectObject.DirectObject):
         to_pos = start + forward * -0.75
 
         from_hitzone = start + forward * 0.5
-        to_hitzone = start + forward * -3.5
+        to_hitzone = start + forward * -self.config.mob_attack_range
 
         ledge_from = pos - forward * 2.5 + Vec3(0, 0, -3)
         ledge_to   = ledge_from - Vec3(0, 0, -5.5)

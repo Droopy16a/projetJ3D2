@@ -80,7 +80,7 @@ AI_ATTACK_COOLDOWN = 1.05
 SPAWN_COOLDOWN = 1.75
 DUNGEON_SWAP_COOLDOWN = 1.25
 MOB_DROP_COOLDOWN = 1.0
-ATTACK_RANGE = 4
+ATTACK_RANGE = 4.0
 MAX_ACTIVE_MOBS = 6
 
 HERO_MAX_HP = 130
@@ -116,6 +116,7 @@ KAYOU_ICON_PATH = os.path.join("assets", "images", "kayou_icon.png")
 MOB_DROP_COOLDOWN = 1.0
 KAYOU_DROP_COOLDOWN = 3.0
 
+MOB_ATTACK_STARTUP_DELAY = 0.5  # ~30 frames at 60fps
 KAYOU_MAX_HP = 120
 
 
@@ -167,6 +168,8 @@ class Game(ShowBase):
                 self.game_config.module_seed = int(hashlib.sha256(seed_src.encode()).hexdigest()[:8], 16)
 
         self.physics = PhysicsManager(self.game_config.gravity, self.render)
+        if self.game_config.debug_physics:
+            self.physics.enable_debug()
         self.world = World(self.game_config, self.render, self.loader, self.physics, index=0)
         self.min_x, self.max_x = self.world.setLimit()
         self.goal_x = self.max_x - 2.0
@@ -192,12 +195,11 @@ class Game(ShowBase):
         self.boss_phase_unlocked = False
         self.winner: str | None = None
         
-        # Roguelike respawn system
         self.hero_start_pos: Vec3 | None = None
         self.hero_respawn_count = 0
         self.hero_death_count = 0
         self.max_respawns = 99  # 99 lives (configurable)
-        self.hero_max_hp = HERO_MAX_HP  # Dynamic max HP that increases per respawn
+        self.hero_max_hp = HERO_MAX_HP  
 
         self.last_attack_times = {"hero": 0.0, "boss": 0.0, "mob": 0.0}
         self.last_boss_action_times = {"swap": -999.0, "spawn": -999.0, "drop": -999.0}
@@ -207,6 +209,7 @@ class Game(ShowBase):
             "mob": {"step": -1, "last_time": 0.0},
         }
         self.ai_attack_clock: dict[int, float] = {}
+        self.mob_attack_pending: dict[int, float] = {}
         self.last_spawn_time = 0.0
         self.attack_buffer_until = 0.0
         self.hitstop_remaining = 0.0
@@ -1945,7 +1948,7 @@ class Game(ShowBase):
             # if "stair_d" in key_prev:
             #     return -9.6
             return 0.0
-        if "stair_u" in key and "stair_d" not in key_prev:
+        if "stair_u" in key and "stair_u" in key_prev:
             return 9.6
         if "stair_d" in key and "stair_u" not in key_prev:
             return -9.6
@@ -2590,7 +2593,6 @@ class Game(ShowBase):
             parent=self.boss_inventory_root,
         )
 
-        # Shade Slot
         self.boss_inventory_shade_slot = self._make_ui_frame(
             parent=self.boss_inventory_root,
             frame_color=self.ui_rarity_colors["legendary"],
@@ -3381,19 +3383,22 @@ class Game(ShowBase):
     def _hero_is_boss_ready(self) -> bool:
         return self._get_hero_damage() >= MOB_MAX_HP or self.hero_level >= BOSS_READY_HERO_LEVEL
 
-    def _apply_hero_mob_kill_reward(self, kills: int = 1, announce: bool = True):
+    def _apply_hero_mob_kill_reward(self, kills: int = 1, announce: bool = True, is_kayou: bool = False):
         kills = max(1, int(kills))
         self.hero_mob_kills += kills
-        self.hero_level += kills
+        self.hero_level += (kills * 2) if is_kayou else kills
         if self.player_id == 0:
-            self.hero_hp = min(HERO_MAX_HP, self.hero_hp + HERO_HEAL_PER_MOB_KILL * kills)
+            self.hero_hp = min(HERO_MAX_HP, self.hero_hp + HERO_HEAL_PER_MOB_KILL * (2 if is_kayou else 1) * kills)
+            mana_reward = HERO_MANA_PER_MOB_KILL * (2.5 if is_kayou else 1.0) * kills
+            self.hero_mana = min(HERO_MAX_MANA, self.hero_mana + mana_reward)
         if announce:
             damage = self._get_hero_damage()
+            reward_type = "Kayou" if is_kayou else "shade"
             if self._hero_is_boss_ready():
                 self._set_status(f"Power {self.hero_level}: mobs fall in one hit. Reach the boss.")
             else:
                 left = max(0, BOSS_READY_HERO_LEVEL - self.hero_level)
-                self._set_status(f"Power {self.hero_level}: damage {damage}. {left} kills until boss-ready.")
+                self._set_status(f"Defeated {reward_type}! Level {self.hero_level}. {left} kills until boss-ready.")
 
     def _regen_boss_mana(self, dt: float):
         if self.player_id != 1 or self.winner:
@@ -4211,7 +4216,7 @@ class Game(ShowBase):
             damage = int(damage * BIG_ATTACK_DAMAGE_MULTIPLIER)
             self._set_status("ULTIMATE ATTACK!")
 
-        hit_range = ATTACK_RANGE + combo_range_bonus
+        hit_range = self.game_config.hero_attack_range + combo_range_bonus
 
         if self.boss_phase_unlocked and self._entity_attack_distance(self.hero.np, self.boss.np) <= hit_range:
             self._queue_message({"type": "attack", "target": "boss", "damage": damage})
@@ -4250,18 +4255,41 @@ class Game(ShowBase):
 
         self._play_attack_vfx(attacker_np)
         self._apply_attack_lunge(attacker_np, 2.8 + combo_range_bonus * 3.5)
-        hit_range = ATTACK_RANGE + combo_range_bonus
-        if self._entity_attack_distance(attacker_np, self.hero.np) <= hit_range:
-            if self.controlled_entity == "boss":
+        
+        if self.controlled_entity == "boss":
+            hit_range = self.game_config.hero_attack_range + combo_range_bonus
+            if self._entity_attack_distance(attacker_np, self.hero.np) <= hit_range:
                 base_damage = BOSS_DAMAGE
+                damage = int(base_damage * combo_multiplier)
+                self._queue_message({"type": "attack", "target": "hero", "damage": damage})
+                self._play_hit_vfx(self.hero.np, damage)
             else:
-                mob = self.local_mobs.get(self.controlled_entity)
-                base_damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
-            damage = int(base_damage * combo_multiplier)
-            self._queue_message({"type": "attack", "target": "hero", "damage": damage})
-            self._play_hit_vfx(self.hero.np, damage)
+                self._set_status("Attack missed.")
         else:
-            self._set_status("Attack missed.")
+            # Controlled mob attack delay
+            mob_id = self.controlled_entity
+            now = time.monotonic()
+            
+            # Check for combo to skip delay
+            is_combo = False
+            state = self.combo_state.get("mob")
+            if state and state["step"] > 0 and now - state["last_time"] <= COMBO_WINDOW:
+                is_combo = True
+                
+            if is_combo:
+                # Instant hit for combo
+                hit_range = self.game_config.hero_attack_range + combo_range_bonus
+                if self._entity_attack_distance(attacker_np, self.hero.np) <= hit_range:
+                    mob = self.local_mobs.get(mob_id)
+                    base_damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
+                    damage = int(base_damage * combo_multiplier)
+                    self._queue_message({"type": "attack", "target": "hero", "damage": damage})
+                    self._play_hit_vfx(self.hero.np, damage)
+                else:
+                    self._set_status("Attack missed.")
+            else:
+                # Delayed hit for opener
+                self.mob_attack_pending[mob_id] = now + MOB_ATTACK_STARTUP_DELAY
 
     def _apply_incoming_attack(self, payload: dict[str, Any]):
         if self.winner:
@@ -4295,18 +4323,23 @@ class Game(ShowBase):
                 return
             if mob_id not in self.local_mobs:
                 return
-            hp = max(0, self.local_mob_hp.get(mob_id, MOB_MAX_HP) - damage)
+            mob_instance = self.local_mobs[mob_id]
+            is_kayou = isinstance(mob_instance, Kayou)
+            max_hp_mob = KAYOU_MAX_HP if is_kayou else MOB_MAX_HP
+            
+            hp = max(0, self.local_mob_hp.get(mob_id, max_hp_mob) - damage)
             self.local_mob_hp[mob_id] = hp
             self._play_hit_vfx(self.local_mobs[mob_id].np, damage)
             if hp == 0:
                 self._destroy_local_mob(mob_id)
-                self._apply_hero_mob_kill_reward(1, announce=False)
+                self._apply_hero_mob_kill_reward(1, announce=False, is_kayou=is_kayou)
                 self._queue_message(
                     {
                         "type": "hero_progress",
                         "level": self.hero_level,
                         "kills": self.hero_mob_kills,
                         "damage": self._get_hero_damage(),
+                        "is_kayou": is_kayou,
                     }
                 )
 
@@ -4451,22 +4484,50 @@ class Game(ShowBase):
             return
 
         now = time.monotonic()
-        for mob_id, mob in self.local_mobs.items():
-            if mob.mode != "AI":
+        
+        # Process pending hits
+        for mob_id in list(self.mob_attack_pending.keys()):
+            if mob_id not in self.local_mobs:
+                self.mob_attack_pending.pop(mob_id, None)
                 continue
-            if not mob.is_attacking:
+                
+            hit_time = self.mob_attack_pending[mob_id]
+            if now >= hit_time:
+                self.mob_attack_pending.pop(mob_id)
+                mob = self.local_mobs[mob_id]
+                if self._entity_attack_distance(mob.np, self.hero.np) <= ATTACK_RANGE:
+                    damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
+                    self._queue_message({"type": "attack", "target": "hero", "damage": damage})
+                    if self.hero:
+                        self._play_hit_vfx(self.hero.np, damage)
+
+        # Trigger new attacks
+        for mob_id, mob in self.local_mobs.items():
+            if mob.mode != "AI" or not mob.is_attacking:
                 continue
             if self._entity_attack_distance(mob.np, self.hero.np) > ATTACK_RANGE:
                 continue
+            
             last_hit = self.ai_attack_clock.get(mob_id, 0.0)
             if now - last_hit >= AI_ATTACK_COOLDOWN:
                 self.ai_attack_clock[mob_id] = now
-                damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
-                self._queue_message({"type": "attack", "target": "hero", "damage": damage})
                 self._play_attack_vfx(mob.np)
-                # Show impact feedback locally for AI hits as well.
-                if self.hero:
-                    self._play_hit_vfx(self.hero.np, damage)
+                
+                # Check for combo to skip delay
+                is_combo = False
+                state = self.combo_state.get("mob")
+                if state and state["step"] > 0 and now - state["last_time"] <= COMBO_WINDOW:
+                    is_combo = True
+                
+                if is_combo:
+                    # Instant hit for combo
+                    damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
+                    self._queue_message({"type": "attack", "target": "hero", "damage": damage})
+                    if self.hero:
+                        self._play_hit_vfx(self.hero.np, damage)
+                else:
+                    # Delayed hit for opener
+                    self.mob_attack_pending[mob_id] = now + MOB_ATTACK_STARTUP_DELAY
 
     def shake_camera(self, intensity: float = 0.35, duration: float = 0.12):
         original_pos = self.camera.getPos(self.render)
