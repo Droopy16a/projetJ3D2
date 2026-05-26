@@ -47,7 +47,7 @@ class Character(DirectObject.DirectObject):
         self.IDLE_ANIM = 'Idle' if 'Idle' in self._anim_names else None
         self.WALK_ANIM = 'Run' if 'Run' in self._anim_names else self.IDLE_ANIM
         self.JUMP_ANIM = 'Jump' if 'Jump' in self._anim_names else None
-        self.ATTACK_ANIM = 'Basic Attack' if 'Basic Attack' in self._anim_names else None
+        self.ATTACK_ANIM = 'Big attack' if 'Big attack' in self._anim_names else None
         self.BIG_ATTACK_ANIM = 'Big attack' if 'Big attack' in self._anim_names else None
 
         if self.IDLE_ANIM:
@@ -57,6 +57,7 @@ class Character(DirectObject.DirectObject):
         self.is_moving = False
         self.is_jumping = False
         self.is_attacking = False
+        self.is_big_attack = False
         self.attack_id = 0
         self._remote_attack_latched = False
         self._remote_attack_id = 0
@@ -135,11 +136,11 @@ class Character(DirectObject.DirectObject):
             node.removeNode()
         self.ray_node[idx] = self.render.attachNewNode(self.ray_vis[idx].create())
 
-    def perform_attack(self, restart: bool = False, reverse_if_midpoint: bool = False) -> bool:
+    def perform_attack(self, restart: bool = False, reverse_if_midpoint: bool = False, is_big: bool = False) -> bool:
         if not self.ATTACK_ANIM:
             self.attack_id += 1
             return True
-        if not self._play_attack_animation(restart=restart, reverse_if_midpoint=reverse_if_midpoint):
+        if not self._play_attack_animation(restart=restart, reverse_if_midpoint=reverse_if_midpoint, is_big=is_big):
             return False
         self.attack_id += 1
         return True
@@ -152,7 +153,7 @@ class Character(DirectObject.DirectObject):
             return 0, 0
         return int(ctrl.getFrame()), max(1, int(ctrl.getNumFrames()))
 
-    def _play_attack_animation(self, restart: bool = False, reverse_if_midpoint: bool = False) -> bool:
+    def _play_attack_animation(self, restart: bool = False, reverse_if_midpoint: bool = False, is_big: bool = False) -> bool:
         start_frame = None
         end_frame = None
         if self.is_attacking:
@@ -171,21 +172,24 @@ class Character(DirectObject.DirectObject):
                 except Exception:
                     pass
 
-        if not self.ATTACK_ANIM:
+        anim_to_play = self.BIG_ATTACK_ANIM if is_big and self.BIG_ATTACK_ANIM else self.ATTACK_ANIM
+        if not anim_to_play:
             return False
 
         self.is_attacking = True
+        self.is_big_attack = is_big
         self.actor.stop()
 
         attack_interval = ActorInterval(
             self.actor,
-            self.ATTACK_ANIM,
+            anim_to_play,
             startFrame=start_frame,
             endFrame=end_frame,
         )
 
         def finish():
             self.is_attacking = False
+            self.is_big_attack = False
             if self.is_moving and self.WALK_ANIM:
                 self.actor.loop(self.WALK_ANIM)
             elif self.IDLE_ANIM:
@@ -195,7 +199,7 @@ class Character(DirectObject.DirectObject):
         self.attack_seq.start()
         return True
 
-    def get_network_anim_state(self) -> dict[str, bool]:
+    def get_network_anim_state(self) -> dict[str, Any]:
         vel = self.node.getLinearVelocity()
         moving = self.is_moving or abs(vel.x) > 0.15 or abs(vel.y) > 0.15
         return {
@@ -203,19 +207,20 @@ class Character(DirectObject.DirectObject):
             "jumping": self.is_jumping,
             "attacking": self.is_attacking,
             "attack_id": self.attack_id,
+            "is_big": self.is_big_attack,
         }
 
-    def apply_remote_animation(self, moving: bool, attacking: bool, jumping: bool, attack_id: int = 0):
+    def apply_remote_animation(self, moving: bool, attacking: bool, jumping: bool, attack_id: int = 0, is_big: bool = False):
         self.is_moving = moving
         if attack_id > self._remote_attack_id:
             should_play_attack = attacking or self._remote_attack_id > 0
             if should_play_attack:
-                if self._play_attack_animation(restart=True, reverse_if_midpoint=self.is_attacking):
+                if self._play_attack_animation(restart=True, reverse_if_midpoint=self.is_attacking, is_big=is_big):
                     self._remote_attack_id = attack_id
             else:
                 self._remote_attack_id = attack_id
         elif attacking and not self._remote_attack_latched:
-            self._play_attack_animation(restart=True)
+            self._play_attack_animation(restart=True, is_big=is_big)
         self._remote_attack_latched = attacking
 
         jump_started = jumping and not self._remote_jump_latched

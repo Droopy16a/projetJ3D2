@@ -18,7 +18,7 @@ class Config:
     debug_hitbox_logs: bool = False
     use_modular_world: bool = True
     module_dir: str = "./assets/models/modules"
-    module_count: int = 14
+    module_count: int = 12
     module_spacing: float = 0.2
     module_seed: int | None = None
 
@@ -30,8 +30,8 @@ class Config:
     player_model_visual_scale = 10.0
 
     player_model: str = "./assets/models/herolowpoly.glb"
-    mob_model: str = "./assets/models/mobAT_copy.glb"
-    mob_visual_scale: float = 1.0
+    mob_model: str = "./assets/models/mobrw.glb"
+    mob_visual_scale: float = 0.72
     kayou_model: str = "./assets/models/Kayou.glb"
     kayou_visual_scale: float = 1.0
     kayou_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)

@@ -15,6 +15,7 @@ from assets.Character import Character
 from assets.Config import Config
 from assets.Global_state import GLOBAL_STATE
 from assets.Mob import Mob
+from assets.Kayou import Kayou
 from assets.PhysicsManager import PhysicsManager
 from assets.World import World
 from assets.Achille import Dungeon, Room
@@ -90,13 +91,18 @@ BOSS_MANA_REGEN = 12.0
 DUNGEON_SWAP_MANA_COST = 35.0
 MOB_SPAWN_MANA_COST = 25.0
 MOB_DROP_MANA_COST = 25.0
+KAYOU_DROP_MANA_COST = 45.0
 
 HERO_DAMAGE = 8
 BOSS_DAMAGE = 230
 MOB_DAMAGE = HERO_MAX_HP
+KAYOU_DAMAGE = 50
 BOSS_READY_HERO_LEVEL = 9
 HERO_DAMAGE_PER_LEVEL = 7
 HERO_HEAL_PER_MOB_KILL = 10
+HERO_MAX_MANA = 100.0
+HERO_MANA_PER_MOB_KILL = 20.0
+BIG_ATTACK_DAMAGE_MULTIPLIER = 2.5
 HUD_UPDATE_INTERVAL = 0.05
 FALL_RECOVERY_DEPTH = 12.0
 FALL_RECOVERY_SAFE_X_PADDING = 0.9
@@ -105,6 +111,12 @@ FALL_RECOVERY_RAY_DOWN = 42.0
 FALL_RECOVERY_LIFT = 1.0
 SPAWN_FLOOR_LIFT = -7.0
 MOB_ICON_PATH = os.path.join("assets", "images", "mob_icon.png")
+KAYOU_ICON_PATH = os.path.join("assets", "images", "kayou_icon.png")
+
+MOB_DROP_COOLDOWN = 1.0
+KAYOU_DROP_COOLDOWN = 3.0
+
+KAYOU_MAX_HP = 120
 
 
 class Game(ShowBase):
@@ -174,6 +186,7 @@ class Game(ShowBase):
         self.hero_hp = HERO_MAX_HP
         self.boss_hp = BOSS_MAX_HP
         self.boss_mana = BOSS_MAX_MANA
+        self.hero_mana = 0.0
         self.hero_level = 0
         self.hero_mob_kills = 0
         self.boss_phase_unlocked = False
@@ -1943,8 +1956,9 @@ class Game(ShowBase):
             self._ui_consumed_click = False
             return
         if self.boss_inventory_open:
-            if self._is_mouse_over_boss_inventory_mob_slot():
-                self._start_boss_inventory_mob_drag()
+            over_slot = self._is_mouse_over_boss_inventory_slot()
+            if over_slot:
+                self._start_boss_inventory_drag(over_slot)
             return
         if self.player_id == 1 and self._is_mouse_over_editor():
             if self._boss_editor_handle_click():
@@ -2576,42 +2590,78 @@ class Game(ShowBase):
             parent=self.boss_inventory_root,
         )
 
-        self.boss_inventory_mob_slot = self._make_ui_frame(
+        # Shade Slot
+        self.boss_inventory_shade_slot = self._make_ui_frame(
             parent=self.boss_inventory_root,
             frame_color=self.ui_rarity_colors["legendary"],
             frame_size=(-0.078, 0.078, -0.078, 0.078),
-            pos=(0.27, 0, 0.005),
+            pos=(0.10, 0, 0.005),
         )
-        self.boss_inventory_mob_slot.bind(DGG.B1PRESS, self._on_boss_inventory_mob_press)
+        self.boss_inventory_shade_slot.bind(DGG.B1PRESS, self._on_boss_inventory_slot_press, ["shade"])
 
-        self.boss_inventory_mob_glow = self._make_ui_frame(
-            parent=self.boss_inventory_mob_slot,
+        self.boss_inventory_shade_glow = self._make_ui_frame(
+            parent=self.boss_inventory_shade_slot,
             frame_color=palette["gold_soft"],
             frame_size=(-0.09, 0.09, -0.09, 0.09),
         )
-        self.boss_inventory_mob_inner = self._make_ui_frame(
-            parent=self.boss_inventory_mob_slot,
+        self.boss_inventory_shade_inner = self._make_ui_frame(
+            parent=self.boss_inventory_shade_slot,
             frame_color=palette["track"],
             frame_size=(-0.062, 0.062, -0.062, 0.062),
         )
-        self.boss_inventory_mob_inner.bind(DGG.B1PRESS, self._on_boss_inventory_mob_press)
-        self.boss_inventory_mob_icon = OnscreenImage(
+        self.boss_inventory_shade_inner.bind(DGG.B1PRESS, self._on_boss_inventory_slot_press, ["shade"])
+        self.boss_inventory_shade_icon = OnscreenImage(
             image=MOB_ICON_PATH,
-            parent=self.boss_inventory_mob_inner,
+            parent=self.boss_inventory_shade_inner,
             pos=(0, 0, 0),
             scale=(0.058, 1, 0.058),
         )
-        self.boss_inventory_mob_icon.setTransparency(TransparencyAttrib.MAlpha)
-        self.boss_inventory_cooldown = self._make_ui_frame(
-            parent=self.boss_inventory_mob_inner,
+        self.boss_inventory_shade_icon.setTransparency(TransparencyAttrib.MAlpha)
+        self.boss_inventory_shade_cooldown = self._make_ui_frame(
+            parent=self.boss_inventory_shade_inner,
             frame_color=palette["cooldown"],
             frame_size=(-0.062, 0.062, -0.062, 0.062),
         )
-        self.boss_inventory_cooldown.setBin("fixed", 80)
-        self.boss_inventory_cooldown.hide()
+        self.boss_inventory_shade_cooldown.setBin("fixed", 80)
+        self.boss_inventory_shade_cooldown.hide()
+        
+        self.boss_inventory_kayou_slot = self._make_ui_frame(
+            parent=self.boss_inventory_root,
+            frame_color=self.ui_rarity_colors["epic"],
+            frame_size=(-0.078, 0.078, -0.078, 0.078),
+            pos=(0.30, 0, 0.005),
+        )
+        self.boss_inventory_kayou_slot.bind(DGG.B1PRESS, self._on_boss_inventory_slot_press, ["kayou"])
+
+        self.boss_inventory_kayou_glow = self._make_ui_frame(
+            parent=self.boss_inventory_kayou_slot,
+            frame_color=palette["gold_soft"],
+            frame_size=(-0.09, 0.09, -0.09, 0.09),
+        )
+        self.boss_inventory_kayou_inner = self._make_ui_frame(
+            parent=self.boss_inventory_kayou_slot,
+            frame_color=palette["track"],
+            frame_size=(-0.062, 0.062, -0.062, 0.062),
+        )
+        self.boss_inventory_kayou_inner.bind(DGG.B1PRESS, self._on_boss_inventory_slot_press, ["kayou"])
+        self.boss_inventory_kayou_icon = OnscreenImage(
+            image=KAYOU_ICON_PATH,
+            parent=self.boss_inventory_kayou_inner,
+            pos=(0, 0, 0),
+            scale=(0.058, 1, 0.058),
+        )
+        self.boss_inventory_kayou_icon.setTransparency(TransparencyAttrib.MAlpha)
+        self.boss_inventory_kayou_cooldown = self._make_ui_frame(
+            parent=self.boss_inventory_kayou_inner,
+            frame_color=palette["cooldown"],
+            frame_size=(-0.062, 0.062, -0.062, 0.062),
+        )
+        self.boss_inventory_kayou_cooldown.setBin("fixed", 80)
+        self.boss_inventory_kayou_cooldown.hide()
+
         self.boss_inventory_mob_count = self._make_ui_text(
             text="",
-            pos=(0.27, -0.11),
+            pos=(0.20, -0.11),
             align=TextNode.ACenter,
             scale=0.026,
             fg=palette["text"],
@@ -2620,8 +2670,8 @@ class Game(ShowBase):
             parent=self.boss_inventory_root,
         )
         self.boss_inventory_cost_text = self._make_ui_text(
-            text=f"{int(MOB_DROP_MANA_COST)} MP",
-            pos=(0.27, 0.105),
+            text="",
+            pos=(0.20, 0.105),
             align=TextNode.ACenter,
             scale=0.023,
             fg=palette["gold"],
@@ -2676,39 +2726,42 @@ class Game(ShowBase):
             self._set_controlled_entity(self.boss_inventory_previous_control)
         self.camera_follow_x = self.camera.getX()
 
-    def _on_boss_inventory_mob_press(self, _event=None):
+    def _on_boss_inventory_slot_press(self, mob_type: str, _event=None):
         self._ui_consumed_click = True
         if not self.boss_inventory_open or self.player_id != 1:
             return
-        self._start_boss_inventory_mob_drag()
+        self._start_boss_inventory_drag(mob_type)
 
-    def _start_boss_inventory_mob_drag(self):
+    def _start_boss_inventory_drag(self, mob_type: str):
         if len(self.local_mobs) >= MAX_ACTIVE_MOBS:
             self._set_status(f"Summon limit reached ({MAX_ACTIVE_MOBS}).")
             return
-        drop_left = self._boss_action_left("drop", MOB_DROP_COOLDOWN)
+        
+        mana_cost = KAYOU_DROP_MANA_COST if mob_type == "kayou" else MOB_DROP_MANA_COST
+        cooldown = KAYOU_DROP_COOLDOWN if mob_type == "kayou" else MOB_DROP_COOLDOWN
+        
+        drop_left = self._boss_action_left(f"drop_{mob_type}", cooldown)
         if drop_left > 0.0:
             self._set_status(f"Summon recharging ({drop_left:.1f}s).")
             return
-        if self.boss_mana + 1e-5 < MOB_DROP_MANA_COST:
-            self._set_status(f"Need {int(MOB_DROP_MANA_COST)} MP to summon.")
+        if self.boss_mana + 1e-5 < mana_cost:
+            self._set_status(f"Need {int(mana_cost)} MP to summon.")
             return
-        self.boss_inventory_dragging = "mob"
+            
+        self.boss_inventory_dragging = mob_type
+        icon_path = KAYOU_ICON_PATH if mob_type == "kayou" else MOB_ICON_PATH
+        self.boss_inventory_drag_icon.setImage(icon_path)
+        self.boss_inventory_drag_icon.setTransparency(TransparencyAttrib.MAlpha)
         self._update_boss_inventory_drag_icon()
 
-    def _is_mouse_over_boss_inventory_mob_slot(self) -> bool:
-        if not self.boss_inventory_open or self.boss_inventory_mob_slot.isHidden():
-            return False
-        if not self.mouseWatcherNode.hasMouse():
-            return False
-        aspect = self.getAspectRatio()
-        mouse_x = self.mouseWatcherNode.getMouseX() * aspect
-        mouse_z = self.mouseWatcherNode.getMouseY()
-        slot_pos = self.boss_inventory_mob_slot.getPos(self.aspect2d)
-        local_x = mouse_x - slot_pos.x
-        local_z = mouse_z - slot_pos.z
-        left, right, bottom, top = self.boss_inventory_mob_slot["frameSize"]
-        return left <= local_x <= right and bottom <= local_z <= top
+    def _is_mouse_over_boss_inventory_slot(self) -> str | None:
+        if not self.boss_inventory_open:
+            return None
+        if self._is_mouse_over_widget(self.boss_inventory_shade_slot):
+            return "shade"
+        if self._is_mouse_over_widget(self.boss_inventory_kayou_slot):
+            return "kayou"
+        return None
 
     def _update_boss_inventory_drag_icon(self):
         if self.boss_inventory_dragging is None or not self.mouseWatcherNode.hasMouse():
@@ -2776,19 +2829,29 @@ class Game(ShowBase):
         return Vec3(world_pos.x, 0, float(result.getHitPos().z) + SPAWN_FLOOR_LIFT)
 
     def _drop_boss_inventory_drag(self):
-        if self.boss_inventory_dragging != "mob":
+        if self.boss_inventory_dragging is None:
             return
+            
+        mob_type = self.boss_inventory_dragging
         self.boss_inventory_dragging = None
         self.boss_inventory_drag_icon.hide()
+        
         if self._is_mouse_over_boss_inventory():
             return
+            
         pos = self._get_mob_drop_position_from_mouse()
         if pos is None:
             self._set_status("Summon on the dungeon floor.")
             return
-        if not self._try_spend_boss_action("drop", MOB_DROP_MANA_COST, MOB_DROP_COOLDOWN, "Summon shade"):
+            
+        mana_cost = KAYOU_DROP_MANA_COST if mob_type == "kayou" else MOB_DROP_MANA_COST
+        cooldown = KAYOU_DROP_COOLDOWN if mob_type == "kayou" else MOB_DROP_COOLDOWN
+        label = "Summon Kayou" if mob_type == "kayou" else "Summon shade"
+        
+        if not self._try_spend_boss_action(f"drop_{mob_type}", mana_cost, cooldown, label):
             return
-        self._spawn_local_mob_at(pos, status_label="Summoned shade")
+            
+        self._spawn_local_mob_at(pos, mob_type=mob_type, status_label=label)
 
     def _on_boss_control_slot_press(self, entity: str | int, _event=None):
         self._ui_consumed_click = True
@@ -2814,10 +2877,13 @@ class Game(ShowBase):
         if self.controlled_entity == "boss":
             return "BOSS", "B", max(0, min(self.boss_hp, BOSS_MAX_HP)), BOSS_MAX_HP
         if isinstance(self.controlled_entity, int) and self.controlled_entity in self.local_mobs:
+            mob = self.local_mobs[self.controlled_entity]
+            max_hp = KAYOU_MAX_HP if isinstance(mob, Kayou) else MOB_MAX_HP
             slot = self._get_mob_slot(self.controlled_entity)
             icon = str(slot) if slot is not None else "M"
-            hp = max(0, min(self.local_mob_hp.get(self.controlled_entity, MOB_MAX_HP), MOB_MAX_HP))
-            return f"MOB {self.controlled_entity}", icon, hp, MOB_MAX_HP
+            hp = max(0, min(self.local_mob_hp.get(self.controlled_entity, max_hp), max_hp))
+            name = "KAYOU" if isinstance(mob, Kayou) else "SHADE"
+            return f"{name} {slot}", icon, hp, max_hp
         return "BOSS", "B", max(0, min(self.boss_hp, BOSS_MAX_HP)), BOSS_MAX_HP
 
     def _update_boss_ui(self, now: float, attack_cd: float, attack_left: float):
@@ -2911,12 +2977,21 @@ class Game(ShowBase):
             slot["image"].setColor(1, 1, 1, 0.98 if is_filled else 0.0)
 
             if is_filled:
-                hp_value = max(0, min(self.local_mob_hp.get(mob_id, MOB_MAX_HP), MOB_MAX_HP))
+                mob_instance = self.local_mobs[mob_id]
+                max_hp_mob = KAYOU_MAX_HP if isinstance(mob_instance, Kayou) else MOB_MAX_HP
+                hp_value = max(0, min(self.local_mob_hp.get(mob_id, max_hp_mob), max_hp_mob))
+                if isinstance(mob_instance, Kayou):
+                    slot["image"].setImage(KAYOU_ICON_PATH)
+                else:
+                    slot["image"].setImage(MOB_ICON_PATH)
+                slot["image"].setTransparency(TransparencyAttrib.MAlpha)
             else:
+                max_hp_mob = MOB_MAX_HP
                 hp_value = 0
                 self._set_text_if_changed(f"boss_mob_slot_label_{index}", slot["label"], str(index + 1))
-            self._set_widget_number_if_changed(f"boss_mob_slot_trail_range_{index}", slot["hp_trail"], "range", MOB_MAX_HP)
-            self._set_widget_number_if_changed(f"boss_mob_slot_range_{index}", slot["hp_bar"], "range", MOB_MAX_HP)
+            
+            self._set_widget_number_if_changed(f"boss_mob_slot_trail_range_{index}", slot["hp_trail"], "range", max_hp_mob)
+            self._set_widget_number_if_changed(f"boss_mob_slot_range_{index}", slot["hp_bar"], "range", max_hp_mob)
             self._set_animated_bar_value(
                 f"boss_mob_slot_hp_value_{index}",
                 slot["hp_bar"],
@@ -2935,41 +3010,84 @@ class Game(ShowBase):
             else:
                 slot["cooldown"].hide()
 
-        drop_left = self._boss_action_left("drop", MOB_DROP_COOLDOWN, now)
-        inventory_hovered = self._is_mouse_over_widget(self.boss_inventory_mob_slot)
+        # Update Arsenal (Inventory) Slots
         inventory_full = len(self.local_mobs) >= MAX_ACTIVE_MOBS
-        inventory_low_mana = self.boss_mana + 1e-5 < MOB_DROP_MANA_COST
-        inventory_ready = not inventory_full and not inventory_low_mana and drop_left <= 0.001
         inventory_pulse = 0.5 + 0.5 * math.sin(self._ui_pulse_time * 5.2)
-        if inventory_ready:
+        
+        # Shade inventory slot
+        shade_drop_left = self._boss_action_left("drop_shade", MOB_DROP_COOLDOWN, now)
+        shade_hovered = self._is_mouse_over_widget(self.boss_inventory_shade_slot)
+        shade_low_mana = self.boss_mana + 1e-5 < MOB_DROP_MANA_COST
+        shade_ready = not inventory_full and not shade_low_mana and shade_drop_left <= 0.001
+        
+        if shade_ready:
             inv_border = self.ui_rarity_colors["legendary"]
             inv_glow = 0.18 + inventory_pulse * 0.16
-            inv_hint = "SUMMON READY"
         elif inventory_full:
             inv_border = (0.35, 0.30, 0.24, 0.68)
             inv_glow = 0.02
-            inv_hint = "SUMMONS FULL"
-        elif inventory_low_mana:
+        elif shade_low_mana:
             inv_border = (0.34, 0.38, 0.56, 0.72)
             inv_glow = 0.04
-            inv_hint = "NEEDS MANA"
         else:
             inv_border = (0.54, 0.39, 0.22, 0.82)
             inv_glow = 0.06
-            inv_hint = f"RECHARGING {drop_left:.1f}S"
-        if inventory_hovered:
+            
+        if shade_hovered:
             inv_glow = max(inv_glow, 0.28)
-        self.boss_inventory_mob_slot["frameColor"] = inv_border
-        self.boss_inventory_mob_glow["frameColor"] = (1.0, 0.72, 0.28, inv_glow)
-        self._set_text_if_changed("boss_inventory_hint", self.boss_inventory_hint, inv_hint)
-        self._set_text_if_changed("boss_inventory_mob_count", self.boss_inventory_mob_count, f"{len(self.local_mobs)}/{MAX_ACTIVE_MOBS}")
-        self._set_text_if_changed("boss_inventory_cost_text", self.boss_inventory_cost_text, f"{int(MOB_DROP_MANA_COST)} MP")
-        if drop_left > 0.001:
-            ratio = max(0.0, min(1.0, drop_left / MOB_DROP_COOLDOWN))
-            self.boss_inventory_cooldown["frameSize"] = (-0.062, 0.062, -0.062, -0.062 + 0.124 * ratio)
-            self.boss_inventory_cooldown.show()
+            self._set_text_if_changed("boss_inventory_hint", self.boss_inventory_hint, "SUMMON SHADE")
+            
+        self.boss_inventory_shade_slot["frameColor"] = inv_border
+        self.boss_inventory_shade_glow["frameColor"] = (1.0, 0.72, 0.28, inv_glow)
+        
+        if shade_drop_left > 0.001:
+            ratio = max(0.0, min(1.0, shade_drop_left / MOB_DROP_COOLDOWN))
+            self.boss_inventory_shade_cooldown["frameSize"] = (-0.062, 0.062, -0.062, -0.062 + 0.124 * ratio)
+            self.boss_inventory_shade_cooldown.show()
         else:
-            self.boss_inventory_cooldown.hide()
+            self.boss_inventory_shade_cooldown.hide()
+            
+        # Kayou inventory slot
+        kayou_drop_left = self._boss_action_left("drop_kayou", KAYOU_DROP_COOLDOWN, now)
+        kayou_hovered = self._is_mouse_over_widget(self.boss_inventory_kayou_slot)
+        kayou_low_mana = self.boss_mana + 1e-5 < KAYOU_DROP_MANA_COST
+        kayou_ready = not inventory_full and not kayou_low_mana and kayou_drop_left <= 0.001
+        
+        if kayou_ready:
+            inv_border = self.ui_rarity_colors["epic"]
+            inv_glow = 0.18 + inventory_pulse * 0.16
+        elif inventory_full:
+            inv_border = (0.35, 0.30, 0.24, 0.68)
+            inv_glow = 0.02
+        elif kayou_low_mana:
+            inv_border = (0.34, 0.38, 0.56, 0.72)
+            inv_glow = 0.04
+        else:
+            inv_border = (0.54, 0.39, 0.22, 0.82)
+            inv_glow = 0.06
+            
+        if kayou_hovered:
+            inv_glow = max(inv_glow, 0.28)
+            self._set_text_if_changed("boss_inventory_hint", self.boss_inventory_hint, "SUMMON KAYOU")
+            
+        self.boss_inventory_kayou_slot["frameColor"] = inv_border
+        self.boss_inventory_kayou_glow["frameColor"] = (1.0, 0.72, 0.28, inv_glow)
+        
+        if kayou_drop_left > 0.001:
+            ratio = max(0.0, min(1.0, kayou_drop_left / KAYOU_DROP_COOLDOWN))
+            self.boss_inventory_kayou_cooldown["frameSize"] = (-0.062, 0.062, -0.062, -0.062 + 0.124 * ratio)
+            self.boss_inventory_kayou_cooldown.show()
+        else:
+            self.boss_inventory_kayou_cooldown.hide()
+
+        if not shade_hovered and not kayou_hovered:
+            inv_hint = "ARSENAL READY" if not inventory_full else "SUMMONS FULL"
+            self._set_text_if_changed("boss_inventory_hint", self.boss_inventory_hint, inv_hint)
+
+        self._set_text_if_changed("boss_inventory_mob_count", self.boss_inventory_mob_count, f"{len(self.local_mobs)}/{MAX_ACTIVE_MOBS}")
+        
+        current_cost = KAYOU_DROP_MANA_COST if kayou_hovered else MOB_DROP_MANA_COST
+        self._set_text_if_changed("boss_inventory_cost_text", self.boss_inventory_cost_text, f"{int(current_cost)} MP")
 
     def _set_status(self, text: str):
         self.status_text.setText(text)
@@ -3170,9 +3288,7 @@ class Game(ShowBase):
             )
             self._set_text_if_changed("hero_pv_text", self.hero_pv_text, f"{hero_hp}/{HERO_MAX_HP}")
 
-            pm_ratio = 1.0
-            if attack_cd > 0.0:
-                pm_ratio = 1.0 - (attack_left / attack_cd)
+            pm_ratio = self.hero_mana / HERO_MAX_MANA
             self._set_animated_bar_value(
                 "hero_pm_value",
                 self.hero_pm_bar,
@@ -3182,7 +3298,7 @@ class Game(ShowBase):
                 speed=13.0,
                 trail_speed=8.0,
             )
-            pm_text = "Ready" if attack_left <= 0.001 else f"{attack_left:.1f}s"
+            pm_text = f"{int(self.hero_mana)}/{int(HERO_MAX_MANA)}"
             self._set_text_if_changed("hero_pm_text", self.hero_pm_text, pm_text)
 
             end_ratio = 1.0
@@ -3360,6 +3476,7 @@ class Game(ShowBase):
         attacking: bool = False,
         jumping: bool = False,
         attack_id: int = 0,
+        is_big: bool = False,
     ):
         now = time.monotonic()
         prev = self.remote_targets.get(key)
@@ -3377,6 +3494,7 @@ class Game(ShowBase):
             "attacking": attacking,
             "jumping": jumping,
             "attack_id": attack_id,
+            "is_big": is_big,
             "vx": vx,
             "vz": vz,
             "last_update": now,
@@ -3537,6 +3655,7 @@ class Game(ShowBase):
                 bool(hero.get("attacking", False)),
                 bool(hero.get("jumping", False)),
                 int(hero.get("attack_id", 0)),
+                bool(hero.get("is_big", False)),
             )
 
         self.hero_hp = int(payload.get("hero_hp", self.hero_hp))
@@ -3631,16 +3750,27 @@ class Game(ShowBase):
             x = float(data.get("x", 0.0))
             z = float(data.get("z", 0.0))
             h = float(data.get("h", 0.0))
+            mob_type = data.get("type", "shade")
 
             if mob_id not in self.remote_mobs:
-                self.remote_mobs[mob_id] = Mob(
-                    self.game_config,
-                    self.render,
-                    self.loader,
-                    self.physics,
-                    start_pos=Vec3(x, 0, z),
-                    mode="REMOTE",
-                )
+                if mob_type == "kayou":
+                    self.remote_mobs[mob_id] = Kayou(
+                        self.game_config,
+                        self.render,
+                        self.loader,
+                        self.physics,
+                        start_pos=Vec3(x, 0, z),
+                        mode="REMOTE",
+                    )
+                else:
+                    self.remote_mobs[mob_id] = Mob(
+                        self.game_config,
+                        self.render,
+                        self.loader,
+                        self.physics,
+                        start_pos=Vec3(x, 0, z),
+                        mode="REMOTE",
+                    )
 
             self._set_remote_target(
                 f"mob:{mob_id}",
@@ -3675,6 +3805,7 @@ class Game(ShowBase):
                     "jumping": bool(hero_anim["jumping"]),
                     "attacking": bool(hero_anim["attacking"]),
                     "attack_id": int(hero_anim["attack_id"]),
+                    "is_big": bool(hero_anim.get("is_big", False)),
                 },
                 "hero_hp": self.hero_hp,
                 "hero_level": self.hero_level,
@@ -3690,6 +3821,7 @@ class Game(ShowBase):
             mobs_payload.append(
                 {
                     "id": mob_id,
+                    "type": "kayou" if isinstance(mob, Kayou) else "shade",
                     "x": float(mob.np.getX()),
                     "z": float(mob.np.getZ()),
                     "h": float(mob.np.getH()),
@@ -4004,6 +4136,7 @@ class Game(ShowBase):
                     bool(target["attacking"]),
                     bool(target["jumping"]),
                     int(target.get("attack_id", 0)),
+                    bool(target.get("is_big", False)),
                 )
             else:
                 entity.apply_remote_animation(moving, bool(target["attacking"]), int(target.get("attack_id", 0)))
@@ -4027,8 +4160,9 @@ class Game(ShowBase):
             return False
 
         animation_started = False
+        is_big = (self.player_id == 0 and self.hero_mana >= HERO_MAX_MANA)
         if self.player_id == 0:
-            animation_started = self.hero.perform_attack(restart=True, reverse_if_midpoint=True)
+            animation_started = self.hero.perform_attack(restart=True, reverse_if_midpoint=True, is_big=is_big)
         else:
             if self.controlled_entity == "boss" and self.boss:
                 animation_started = self.boss.perform_attack(restart=True, reverse_if_midpoint=True)
@@ -4041,12 +4175,15 @@ class Game(ShowBase):
             self.attack_buffer_until = max(self.attack_buffer_until, now + ATTACK_INPUT_BUFFER)
             return False
 
+        if is_big:
+            self.hero_mana = 0.0
+
         self.last_attack_times[cd_key] = now
         self.attack_buffer_until = 0.0
 
         combo_multiplier, combo_range_bonus = self._next_combo_multiplier(cd_key, now)
         if self.player_id == 0:
-            self._send_hero_attack(combo_multiplier, combo_range_bonus)
+            self._send_hero_attack(combo_multiplier, combo_range_bonus, is_big=is_big)
         else:
             self._send_boss_attack(combo_multiplier, combo_range_bonus)
         return True
@@ -4065,11 +4202,15 @@ class Game(ShowBase):
         if can_attack:
             self._perform_attack(now, allow_combo_cancel=True)
 
-    def _send_hero_attack(self, combo_multiplier: float, combo_range_bonus: float):
+    def _send_hero_attack(self, combo_multiplier: float, combo_range_bonus: float, is_big: bool = False):
         self._play_attack_vfx(self.hero.np)
         self._apply_attack_lunge(self.hero.np, 3.5 + combo_range_bonus * 4.0)
         sent = False
         damage = self._get_hero_damage(combo_multiplier)
+        if is_big:
+            damage = int(damage * BIG_ATTACK_DAMAGE_MULTIPLIER)
+            self._set_status("ULTIMATE ATTACK!")
+
         hit_range = ATTACK_RANGE + combo_range_bonus
 
         if self.boss_phase_unlocked and self._entity_attack_distance(self.hero.np, self.boss.np) <= hit_range:
@@ -4111,7 +4252,11 @@ class Game(ShowBase):
         self._apply_attack_lunge(attacker_np, 2.8 + combo_range_bonus * 3.5)
         hit_range = ATTACK_RANGE + combo_range_bonus
         if self._entity_attack_distance(attacker_np, self.hero.np) <= hit_range:
-            base_damage = BOSS_DAMAGE if self.controlled_entity == "boss" else MOB_DAMAGE
+            if self.controlled_entity == "boss":
+                base_damage = BOSS_DAMAGE
+            else:
+                mob = self.local_mobs.get(self.controlled_entity)
+                base_damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
             damage = int(base_damage * combo_multiplier)
             self._queue_message({"type": "attack", "target": "hero", "damage": damage})
             self._play_hit_vfx(self.hero.np, damage)
@@ -4181,9 +4326,9 @@ class Game(ShowBase):
         source_np = self._get_controlled_np() or self.boss.np
         x = source_np.getX() + random.uniform(-1.5, 1.5)
         z = source_np.getZ() + 0.5
-        self._spawn_local_mob_at(Vec3(x, 0, z))
+        self._spawn_local_mob_at(Vec3(x, 0, z), mob_type="shade")
 
-    def _spawn_local_mob_at(self, pos: Vec3, status_label: str = "Summoned shade"):
+    def _spawn_local_mob_at(self, pos: Vec3, mob_type: str = "shade", status_label: str = "Summoned shade"):
         if self.player_id != 1 or self.winner:
             return
         if len(self.local_mobs) >= MAX_ACTIVE_MOBS:
@@ -4192,16 +4337,29 @@ class Game(ShowBase):
         mob_id = self.next_mob_id
         self.next_mob_id += 1
 
-        mob = Mob(
-            self.game_config,
-            self.render,
-            self.loader,
-            self.physics,
-            start_pos=pos,
-            mode="AI",
-        )
+        if mob_type == "kayou":
+            mob = Kayou(
+                self.game_config,
+                self.render,
+                self.loader,
+                self.physics,
+                start_pos=pos,
+                mode="AI",
+            )
+            max_hp = KAYOU_MAX_HP
+        else:
+            mob = Mob(
+                self.game_config,
+                self.render,
+                self.loader,
+                self.physics,
+                start_pos=pos,
+                mode="AI",
+            )
+            max_hp = MOB_MAX_HP
+
         self.local_mobs[mob_id] = mob
-        self.local_mob_hp[mob_id] = MOB_MAX_HP
+        self.local_mob_hp[mob_id] = max_hp
         self.ai_attack_clock[mob_id] = 0.0
         self._spawn_pulse_vfx(mob.np.getPos(self.render) + Vec3(0, 0, 1.3), (0.4, 0.95, 1.0, 0.9), 0.22, 0.28)
         slot = self._get_mob_slot(mob_id)
@@ -4246,7 +4404,9 @@ class Game(ShowBase):
             return "boss"
         if isinstance(entity, int):
             slot = self._get_mob_slot(entity)
-            return f"shade {slot}" if slot is not None else f"shade {entity}"
+            mob = self.local_mobs.get(entity)
+            mob_name = "kayou" if isinstance(mob, Kayou) else "shade"
+            return f"{mob_name} {slot}" if slot is not None else f"{mob_name} {entity}"
         return "boss"
 
     def cycle_control(self):
@@ -4301,11 +4461,12 @@ class Game(ShowBase):
             last_hit = self.ai_attack_clock.get(mob_id, 0.0)
             if now - last_hit >= AI_ATTACK_COOLDOWN:
                 self.ai_attack_clock[mob_id] = now
-                self._queue_message({"type": "attack", "target": "hero", "damage": MOB_DAMAGE})
+                damage = KAYOU_DAMAGE if isinstance(mob, Kayou) else MOB_DAMAGE
+                self._queue_message({"type": "attack", "target": "hero", "damage": damage})
                 self._play_attack_vfx(mob.np)
                 # Show impact feedback locally for AI hits as well.
                 if self.hero:
-                    self._play_hit_vfx(self.hero.np, MOB_DAMAGE)
+                    self._play_hit_vfx(self.hero.np, damage)
 
     def shake_camera(self, intensity: float = 0.35, duration: float = 0.12):
         original_pos = self.camera.getPos(self.render)

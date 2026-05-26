@@ -62,6 +62,7 @@ class Boss(DirectObject.DirectObject):
         self.np.setCollideMask(bit(index))
 
         self.actor = Actor(self.MODEL_PATH)
+        self.actor.setHpr(-90, 0, 0)
         self.actor.reparentTo(self.np)
 
         self._anim_names = list(self.actor.getAnimNames()) if self.actor else []

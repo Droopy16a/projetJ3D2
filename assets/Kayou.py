@@ -61,11 +61,13 @@ class Kayou(DirectObject.DirectObject):
         # self.actor.setPos(float(ox), float(oy), float(oz))
 
         anims = set(self.actor.getAnimNames()) if self.actor else set()
+
+        print(f"Kayou animations: {anims}")
         
         # Improved animation detection (case-insensitive and partial matching)
-        self.ATTACK_ANIM = next((a for a in anims if 'atack' in a.lower() or 'attack' in a.lower()), None)
-        self.WALK_ANIM = next((a for a in anims if 'run' in a.lower() or 'walk' in a.lower()), None)
-        self.IDLE_ANIM = next((a for a in anims if 'idle' in a.lower()), None)
+        self.ATTACK_ANIM = next((a for a in anims if 'Attack Gro Mob' in a or 'Attack Gro Mob' in a), None)
+        self.WALK_ANIM = next((a for a in anims if 'Walk Gro mob' in a or 'Walk Gro mob' in a), None)
+        self.IDLE_ANIM = next((a for a in anims if 'idle' in a), None)
         
         # Fallbacks
         if not self.IDLE_ANIM:
@@ -359,7 +361,7 @@ class Kayou(DirectObject.DirectObject):
             if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
                 if self.WALK_ANIM:
                     self._loop_anim(self.WALK_ANIM)
-            if ctrl and ctrl.getFrame() == 17:
+            if ctrl and ctrl.getFrame() == 42:
                 GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
 
         if not ledge.hasHit():
@@ -418,7 +420,7 @@ class Kayou(DirectObject.DirectObject):
                 if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
                     if self.WALK_ANIM:
                         self._loop_anim(self.WALK_ANIM)
-                if ctrl and ctrl.getFrame() == 17:
+                if ctrl and ctrl.getFrame() == 42:
                     GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
 
     def destroy(self):
