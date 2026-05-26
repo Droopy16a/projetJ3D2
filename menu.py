@@ -55,6 +55,7 @@ class Menu(ShowBase):
         self.start_requested = False
         self.server_host = os.getenv("DUNGEON_ARISE_HOST", "127.0.0.1")
         self.discovering_server = False
+        self.selected_seed = None
         self.discovery_thread = None
 
         self.blue_glow = (0.45, 0.85, 1.0, 0.9)
@@ -174,6 +175,13 @@ class Menu(ShowBase):
         return task.cont
 
     def start_game(self):
+        env_seed = os.getenv("DUNGEON_WORLD_SEED")
+        if env_seed is not None:
+            try:
+                self.selected_seed = int(env_seed)
+            except ValueError:
+                pass
+
         self.start_requested = True
         self.taskMgr.stop()
 

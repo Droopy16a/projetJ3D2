@@ -108,9 +108,12 @@ MOB_ICON_PATH = os.path.join("assets", "images", "mob_icon.png")
 
 
 class Game(ShowBase):
-    def __init__(self, config: Config = Config()):
+    def __init__(self, config: Config | None = None, module_seed: int | None = None):
         super().__init__()
-        self.game_config = config
+        self.game_config = config if config is not None else Config()
+        if module_seed is not None:
+            self.game_config.module_seed = module_seed
+
         self.disableMouse()
 
         if simplepbr is not None:
@@ -151,7 +154,7 @@ class Game(ShowBase):
                 except ValueError:
                     self.game_config.module_seed = None
             if self.game_config.module_seed is None:
-                seed_src = f"{self.ws_host}:{self.PORT}"
+                seed_src = f"DUNGEON_ARISE_WORLD:{self.PORT}"
                 self.game_config.module_seed = int(hashlib.sha256(seed_src.encode()).hexdigest()[:8], 16)
 
         self.physics = PhysicsManager(self.game_config.gravity, self.render)
