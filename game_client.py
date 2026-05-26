@@ -108,12 +108,9 @@ MOB_ICON_PATH = os.path.join("assets", "images", "mob_icon.png")
 
 
 class Game(ShowBase):
-    def __init__(self, config: Config | None = None, module_seed: int | None = None):
+    def __init__(self, config: Config = Config()):
         super().__init__()
-        self.game_config = config if config is not None else Config()
-        if module_seed is not None:
-            self.game_config.module_seed = module_seed
-
+        self.game_config = config
         self.disableMouse()
 
         if simplepbr is not None:
@@ -1603,13 +1600,13 @@ class Game(ShowBase):
             old_z = float(node.getZ())
             node.setX(current_x - float(min_bound.x))
             level_offset = levels.get(room, 0.0)
-            node.setZ(level_offset)
+            node.setZ(meta["base_z"] + level_offset)
             self._sync_module_physics(node)
             dx = float(node.getX()) - old_x
             dz = float(node.getZ()) - old_z
             if abs(dx) > 1e-5 or abs(dz) > 1e-5:
                 move_deltas.append({"module_id": id(node), "bounds": old_bounds, "delta": Vec3(dx, 0, dz), "width": width})
-            current_x += width + self.world.module_spacing
+            current_x += width
         self._teleport_entities_with_modules(move_deltas, entity_module_ids)
         self.world.recompute_bounds()
         self.min_x, self.max_x = self.world.setLimit()
@@ -1906,25 +1903,28 @@ class Game(ShowBase):
 
         levels: dict[Room, float] = {}
         current_level = 0.0
-        for room in rooms:
+        levels[rooms[0]] = current_level
+
+        for i in range(1, len(rooms)):
+            room = rooms[i]
+            prev = rooms[i - 1] if i > 0 else None
+            meta = self.editor_room_to_module.get(room, {}).get("meta", {})
+            prev = self.editor_room_to_module.get(prev, {}).get("meta", {})
+            delta = self._module_level_delta(meta, prev)
+            current_level += delta
             levels[room] = current_level
-            mapping = self.editor_room_to_module.get(room, {})
-            meta = mapping.get("meta", {})
-            # The height change occurs ACROSS the module, affecting the NEXT module
-            current_level += self._module_level_delta(meta)
+
         return levels
 
-    def _module_level_delta(self, meta: dict) -> float:
-        key = f"{meta.get('name', '')} {meta.get('path', '')}".lower().replace("-", "_").replace(" ", "_")
-        # Derive height change from the model's actual vertical extent
-        height = float(meta["max_bound"].z - meta["min_bound"].z)
-        
+    def _module_level_delta(self, meta: dict, prev = None) -> float:
+        key = f"{meta.get('name', '')} {meta.get('path', '')}".lower().replace("-", "_")
+        key_prev = f"{prev.get('name', '')} {prev.get('path', '')}".lower().replace("-", "_") if prev else ""
         if "base" in key:
             return 0.0
-        if "stair_u" in key:
-            return height
-        if "stair_d" in key:
-            return -height
+        if "stair_u" in key and "stair_d" not in key_prev:
+            return 9.6
+        if "stair_d" in key and "stair_u" not in key_prev:
+            return -9.6
         return 0.0
 
     def _on_mouse1(self):

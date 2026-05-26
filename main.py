@@ -7,9 +7,8 @@ if __name__ == "__main__":
     menu = Menu()
     menu.run()
     start_requested = menu.start_requested
-    selected_seed = menu.selected_seed
     menu.destroy()
     if start_requested:
-        game = Game(module_seed=selected_seed)
+        game = Game()
         game.run()
     # game.run()
