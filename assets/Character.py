@@ -26,6 +26,7 @@ class Character(DirectObject.DirectObject):
         self.physics = physics
 
         self.actor = Actor(self.config.player_model)
+        self.actor.setScale(self.config.player_model_visual_scale)
         self.actor.reparentTo(render)
 
         shape = BulletCapsuleShape(0.75, 3.0, 2)
@@ -43,10 +44,11 @@ class Character(DirectObject.DirectObject):
         physics.attach(self.node, self.np)
 
         self._anim_names = set(self.actor.getAnimNames())
-        self.IDLE_ANIM = 'idle' if 'idle' in self._anim_names else (next(iter(self._anim_names)) if self._anim_names else None)
-        self.WALK_ANIM = 'running' if 'running' in self._anim_names else self.IDLE_ANIM
-        self.JUMP_ANIM = 'jumping' if 'jumping' in self._anim_names else None
-        self.ATTACK_ANIM = 'atack' if 'atack' in self._anim_names else None
+        self.IDLE_ANIM = 'Idle' if 'Idle' in self._anim_names else None
+        self.WALK_ANIM = 'Run' if 'Run' in self._anim_names else self.IDLE_ANIM
+        self.JUMP_ANIM = 'Jump' if 'Jump' in self._anim_names else None
+        self.ATTACK_ANIM = 'Basic Attack' if 'Basic Attack' in self._anim_names else None
+        self.BIG_ATTACK_ANIM = 'Big attack' if 'Big attack' in self._anim_names else None
 
         if self.IDLE_ANIM:
             self.actor.loop(self.IDLE_ANIM)
@@ -84,8 +86,8 @@ class Character(DirectObject.DirectObject):
         elif GLOBAL_STATE.get_player_id() == 1:
             self.disable_physics()
 
-        self.jump_crouch_frame = 10
-        self.jump_fly_frame = 25
+        self.jump_crouch_frame = 5
+        self.jump_fly_frame = 15
         self.jump_sequence: Optional[Sequence] = None
 
         self.speed = config.speed

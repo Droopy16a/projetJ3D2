@@ -9,6 +9,7 @@ class Config:
     gravity: Vec3 = Vec3(0, 0, -9.81)
     player_mass: float = 70.0
     mob_mass: float = 30.0
+    kayou_mass: float = 100.0
     cube_mass: float = 200.0
     boss_mass: float = 200.0
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
@@ -17,7 +18,7 @@ class Config:
     debug_hitbox_logs: bool = False
     use_modular_world: bool = True
     module_dir: str = "./assets/models/modules"
-    module_count: int = 7
+    module_count: int = 14
     module_spacing: float = 0.2
     module_seed: int | None = None
 
@@ -26,9 +27,14 @@ class Config:
     jump_charge_max: float = 10.0
     jump_charge_rate: float = 0.1
 
-    player_model: str = "./assets/models/persoepenoir.glb"
+    player_model_visual_scale = 10.0
+
+    player_model: str = "./assets/models/herolowpoly.glb"
     mob_model: str = "./assets/models/mobAT_copy.glb"
     mob_visual_scale: float = 1.0
+    kayou_model: str = "./assets/models/Kayou.glb"
+    kayou_visual_scale: float = 1.0
+    kayou_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     cube_model: str = "./assets/models/box.glb"
     sword_model: str = "./assets/models/sword.glb"
