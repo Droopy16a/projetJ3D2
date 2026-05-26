@@ -47,7 +47,7 @@ class Character(DirectObject.DirectObject):
         self.IDLE_ANIM = 'Idle' if 'Idle' in self._anim_names else None
         self.WALK_ANIM = 'Run' if 'Run' in self._anim_names else self.IDLE_ANIM
         self.JUMP_ANIM = 'Jump' if 'Jump' in self._anim_names else None
-        self.ATTACK_ANIM = 'Big attack' if 'Big attack' in self._anim_names else None
+        self.ATTACK_ANIM = 'Basic Attack' if 'Basic Attack' in self._anim_names else None
         self.BIG_ATTACK_ANIM = 'Big attack' if 'Big attack' in self._anim_names else None
 
         if self.IDLE_ANIM:

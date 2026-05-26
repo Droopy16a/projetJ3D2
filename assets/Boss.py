@@ -66,7 +66,7 @@ class Boss(DirectObject.DirectObject):
         self.actor.reparentTo(self.np)
 
         self._anim_names = list(self.actor.getAnimNames()) if self.actor else []
-        self.WALK_ANIM = self._find_anim("walk", "run")
+        self.WALK_ANIM = None #self._find_anim("walk", "run")
         self.IDLE_ANIM = self._find_anim("idle") or self._find_anim("intro") or self.WALK_ANIM
         self.DIE_ANIM = self._find_anim("die", "death")
         self.INTRO_ANIM = self._find_anim("intro")
@@ -389,7 +389,19 @@ class Boss(DirectObject.DirectObject):
             self._loop_anim(self.IDLE_ANIM)
 
     def update_ai(self, dt: float):
+        forward = self.np.getQuat().getForward()
+        forward.normalize()
         pos = self.np.getPos()
+
+        start = pos + Vec3(0, 0, 1.5)
+        to_hitzone = start + forward * -self.config.boss_attack_range
+        hitzone = self.physics.world.rayTestClosest(start, to_hitzone)
+        self._draw_debug_ray(0, start, to_hitzone)
+
+        if hitzone.hasHit() and hitzone.getNode().getName() == 'Character':
+             if not self.is_attacking:
+                self.perform_attack(force=True)
+
         if self.bounds and pos.x > self.bounds[1]:
             self.direction = -1
             self.np.setH(-90)

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 from typing import Dict
 from panda3d.core import (
     Vec3,
     TransformState, 
     BitMask32,
     LineSegs,
+    NodePath,
 )
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
@@ -40,10 +42,10 @@ class Kayou(DirectObject.DirectObject):
         self._remote_attack_id = 0
 
 
-        shape = BulletCapsuleShape(0.75, 1.0, 2)
+        shape = BulletCapsuleShape(2.0, 3.0, 2)
         self.node = BulletRigidBodyNode('kayou')
         self.node.setMass(config.kayou_mass)
-        self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 1)))
+        self.node.addShape(shape, TransformState.makePos(Vec3(0, 0, 2.5)))
         self.node.setAngularFactor(Vec3(0, 0, 0))
         self.node.setLinearFactor(Vec3(1, 0, 1))
 
@@ -62,7 +64,7 @@ class Kayou(DirectObject.DirectObject):
 
         anims = set(self.actor.getAnimNames()) if self.actor else set()
 
-        print(f"Kayou animations: {anims}")
+        # print(f"Kayou animations: {anims}")
         
         # Improved animation detection (case-insensitive and partial matching)
         self.ATTACK_ANIM = next((a for a in anims if 'Attack Gro Mob' in a or 'Attack Gro Mob' in a), None)
@@ -91,7 +93,64 @@ class Kayou(DirectObject.DirectObject):
                 self.ray_vis[r].setThickness(2)
                 self.ray_node[r] = self.render.attachNewNode(self.ray_vis[r].create())
 
+        self.debug_hitbox = bool(getattr(self.config, "debug_kayou_hitbox", False)) or bool(getattr(self.config, "debug_physics", False))
+        if self.debug_hitbox:
+            self.hitbox_np = self._create_debug_hitbox(0.75, 1.0)
+            self.hitbox_np.setPos(0, 0, 1)
+
         self.set_mode(mode)
+
+    def _create_debug_hitbox(self, radius: float, height: float) -> NodePath:
+        segs = LineSegs()
+        segs.setThickness(2.0)
+        segs.setColor(0, 1, 0, 1) # Green
+        
+        half_h = height / 2.0
+        
+        # Horizontal circles
+        for z in [half_h, -half_h]:
+            segs.moveTo(radius, 0, z)
+            for i in range(1, 33):
+                angle = i / 32.0 * 2.0 * math.pi
+                segs.drawTo(radius * math.cos(angle), radius * math.sin(angle), z)
+        
+        # XZ meridian
+        segs.moveTo(radius, 0, -half_h)
+        segs.drawTo(radius, 0, half_h)
+        segs.moveTo(-radius, 0, -half_h)
+        segs.drawTo(-radius, 0, half_h)
+        for i in range(0, 17):
+            phi = i / 16.0 * math.pi
+            x = radius * math.cos(phi)
+            z = half_h + radius * math.sin(phi)
+            if i == 0: segs.moveTo(x, 0, z)
+            else: segs.drawTo(x, 0, z)
+        for i in range(0, 17):
+            phi = i / 16.0 * math.pi
+            x = radius * math.cos(phi)
+            z = -half_h - radius * math.sin(phi)
+            if i == 0: segs.moveTo(x, 0, z)
+            else: segs.drawTo(x, 0, z)
+
+        # YZ meridian
+        segs.moveTo(0, radius, -half_h)
+        segs.drawTo(0, radius, half_h)
+        segs.moveTo(0, -radius, -half_h)
+        segs.drawTo(0, -radius, half_h)
+        for i in range(0, 17):
+            phi = i / 16.0 * math.pi
+            y = radius * math.cos(phi)
+            z = half_h + radius * math.sin(phi)
+            if i == 0: segs.moveTo(0, y, z)
+            else: segs.drawTo(0, y, z)
+        for i in range(0, 17):
+            phi = i / 16.0 * math.pi
+            y = radius * math.cos(phi)
+            z = -half_h - radius * math.sin(phi)
+            if i == 0: segs.moveTo(0, y, z)
+            else: segs.drawTo(0, y, z)
+
+        return self.np.attachNewNode(segs.create())
 
     def _reset_controls(self):
         for k in self.keys:
@@ -337,7 +396,7 @@ class Kayou(DirectObject.DirectObject):
         to_pos = start + forward * -0.75
 
         from_hitzone = start + forward * 0.5
-        to_hitzone = start + forward * -3.5
+        to_hitzone = start + forward * -self.config.kayou_attack_range
 
         ledge_from = pos - forward * 2.5 + Vec3(0, 0, -3)
         ledge_to   = ledge_from - Vec3(0, 0, -5.5)
@@ -428,6 +487,8 @@ class Kayou(DirectObject.DirectObject):
         if self.actor:
             self.actor.cleanup()
         self.physics.detach(self.node)
+        if hasattr(self, "hitbox_np") and self.hitbox_np and not self.hitbox_np.isEmpty():
+            self.hitbox_np.removeNode()
         for node in self.ray_node:
             if node and not node.isEmpty():
                 node.removeNode()

@@ -23,6 +23,8 @@ class PhysicsManager:
         self.world.removeRigidBody(node)
 
     def enable_debug(self):
+        if self._debug_np is not None:
+            return
         debug_node = BulletDebugNode('BulletDebug')
         self._debug_np = self._render.attachNewNode(debug_node)
         self._debug_np.show()
