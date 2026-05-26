@@ -1906,17 +1906,12 @@ class Game(ShowBase):
 
         levels: dict[Room, float] = {}
         current_level = 0.0
-        levels[rooms[0]] = current_level
-
-        for i in range(1, len(rooms)):
-            room = rooms[i]
-            prev = rooms[i - 1] if i > 0 else None
-            meta = self.editor_room_to_module.get(room, {}).get("meta", {})
-            prev = self.editor_room_to_module.get(prev, {}).get("meta", {})
-            delta = self._module_level_delta(meta, prev)
-            current_level += delta
+        for room in rooms:
             levels[room] = current_level
-
+            mapping = self.editor_room_to_module.get(room, {})
+            meta = mapping.get("meta", {})
+            # The height change occurs ACROSS the module, affecting the NEXT module
+            current_level += self._module_level_delta(meta)
         return levels
 
     def _module_level_delta(self, meta: dict, prev = None) -> float:
