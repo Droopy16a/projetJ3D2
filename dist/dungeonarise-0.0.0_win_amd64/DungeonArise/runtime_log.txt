@@ -1,0 +1,8 @@
+Known pipe types:
+  wglGraphicsPipe
+(all display modules loaded.)
+Searching for server on local network...
+Known pipe types:
+  wglGraphicsPipe
+(all display modules loaded.)
+:ffmpeg(warning): Estimating duration from bitrate, this may be inaccurate

@@ -5,7 +5,7 @@ from panda3d.core import Vec3
 
 @dataclass
 class Config:
-    window_title: str = "DZ jeu"
+    window_title: str = "When Dungeon Arises"
     gravity: Vec3 = Vec3(0, 0, -9.81)
     player_mass: float = 70.0
     mob_mass: float = 30.0

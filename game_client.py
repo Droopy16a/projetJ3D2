@@ -21,6 +21,7 @@ from assets.World import World
 from assets.Achille import Dungeon, Room
 
 from direct.gui.DirectGui import DirectFrame, DirectWaitBar, DirectButton
+from direct.gui.DirectGui import DirectFrame, DirectWaitBar, DirectButton, DirectSlider
 from direct.gui import DirectGuiGlobals as DGG
 from direct.gui.OnscreenImage import OnscreenImage
 from direct.gui.OnscreenText import OnscreenText
@@ -157,12 +158,15 @@ class Game(ShowBase):
         
 
         # Initialize and loop background music ambiance
+        self.music_volume = 0.5
         self.bg_music = self.loader.loadMusic(os.path.join("assets", "music","game_ambiance.mp3"))
         self.bg_music.setLoop(True)
         self.bg_music.setVolume(0.5)
+        self.bg_music.setVolume(self.music_volume)
         self.bg_music.play()
 
         # Load hero running sound
+        self.sfx_volume = 0.8
         self.sfx_hero_run = self.loader.loadSfx(os.path.join("assets", "music", "hero-run.mp3"))
         self.sfx_hero_run.setLoop(True)
 
@@ -173,6 +177,17 @@ class Game(ShowBase):
         self.sfx_hero_jump = self.loader.loadSfx(os.path.join("assets", "music", "hero-jump.mp3"))
         self.sfx_hero_big_attack = self.loader.loadSfx(os.path.join("assets", "music", "hero-jump-attack.mp3"))
         self.sfx_hero_death = self.loader.loadSfx(os.path.join("assets", "music", "hero-death.mp3"))
+
+        self.all_sfx = [
+            self.sfx_hero_run,
+            self.sfx_hero_attack_hit,
+            self.sfx_hero_attack_miss,
+            self.sfx_hero_jump,
+            self.sfx_hero_big_attack,
+            self.sfx_hero_death
+        ]
+        for sfx in self.all_sfx:
+            sfx.setVolume(self.sfx_volume)
 
         self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
         self.ws_host = os.getenv("DUNGEON_ARISE_HOST", DEFAULT_HOST)
@@ -286,6 +301,7 @@ class Game(ShowBase):
         self.accept("t", self._boss_teleport_request)
         self.accept("mouse1", self._on_mouse1)
         self.accept("mouse1-up", self._on_mouse1_up)
+        self.accept("p", self._toggle_options_panel)
 
         self.taskMgr.add(self._task_physics, "physics_task")
         self.taskMgr.add(self._task_update, "update_task")
@@ -2229,6 +2245,7 @@ class Game(ShowBase):
         self._setup_boss_ui()
         self._setup_boss_inventory_ui()
         self._setup_game_over_ui()
+        self._setup_options_ui()
 
     def _setup_game_over_ui(self):
         palette = self.ui_palette
@@ -2288,6 +2305,88 @@ class Game(ShowBase):
         for mid in list(self.local_mobs.keys()):
             self._destroy_local_mob(mid)
         self._set_status("Game Restarted.")
+
+    def _setup_options_ui(self):
+        palette = self.ui_palette
+        self.options_root = self._make_fantasy_panel(
+            self.ui_root,
+            (-0.45, 0.45, -0.28, 0.32),
+            (0, 0, 0),
+            name="options_panel"
+        )
+        self.options_root.hide()
+
+        self.options_title = self._make_ui_text(
+            text="SETTINGS",
+            pos=(0, 0.2),
+            align=TextNode.ACenter,
+            scale=0.08,
+            fg=palette["gold"],
+            shadow=(0, 0, 0, 0.8),
+            mayChange=False,
+            parent=self.options_root
+        )
+
+        self.music_label = self._make_ui_text(
+            text="Music Volume",
+            pos=(-0.35, 0.1),
+            align=TextNode.ALeft,
+            scale=0.045,
+            fg=palette["text"],
+            parent=self.options_root
+        )
+
+        self.music_slider = DirectSlider(
+            parent=self.options_root,
+            range=(0, 1),
+            value=self.music_volume,
+            pos=(0.08, 0, 0.065),
+            scale=0.32,
+            command=self._update_music_volume,
+            frameColor=palette["track"],
+            thumb_relief=DGG.FLAT,
+            thumb_frameColor=palette["gold"]
+        )
+
+        self.sfx_label = self._make_ui_text(
+            text="SFX Volume",
+            pos=(-0.35, -0.07),
+            align=TextNode.ALeft,
+            scale=0.045,
+            fg=palette["text"],
+            parent=self.options_root
+        )
+
+        self.sfx_slider = DirectSlider(
+            parent=self.options_root,
+            range=(0, 1),
+            value=self.sfx_volume,
+            pos=(0.08, 0, -0.105),
+            scale=0.32,
+            command=self._update_sfx_volume,
+            frameColor=palette["track"],
+            thumb_relief=DGG.FLAT,
+            thumb_frameColor=palette["gold"]
+        )
+
+    def _toggle_options_panel(self):
+        if self.options_root.isHidden():
+            self.options_root.show()
+            self._set_status("Settings opened.")
+        else:
+            self.options_root.hide()
+
+    def _update_music_volume(self):
+        self.music_volume = float(self.music_slider['value'])
+        if hasattr(self, 'bg_music'):
+            self.bg_music.setVolume(self.music_volume)
+
+    def _update_sfx_volume(self):
+        self.sfx_volume = float(self.sfx_slider['value'])
+        if hasattr(self, 'all_sfx'):
+            for sfx in self.all_sfx:
+                if sfx:
+                    sfx.setVolume(self.sfx_volume)
 
     def _setup_hero_ui(self):
         palette = self.ui_palette
