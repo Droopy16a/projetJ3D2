@@ -94,7 +94,6 @@ class Boss(DirectObject.DirectObject):
 
         self.animation_keys = {
             "i": self.INTRO_ANIM,
-            "t": self.TELEPORT_ANIM,
             "x": self.DIE_ANIM,
             "c": self.CUBE_ANIM,
         }
@@ -426,8 +425,10 @@ class Boss(DirectObject.DirectObject):
         vel = self.node.getLinearVelocity()
 
         if has_move_input:
-            if self.is_playing_action:
-                self._cancel_action()
+            # if self.is_playing_action:
+            #     # Do not cancel the teleport animation if it's currently playing
+            #     if self.TELEPORT_ANIM is None or self._current_anim() != self.TELEPORT_ANIM:
+            #         self._cancel_action()
             desired_x = move_x * self.control_speed
             vel.setX(self._approach(vel.x, desired_x, self.ground_accel * dt))
             vel.setY(self._approach(vel.y, 0.0, self.ground_accel * dt))

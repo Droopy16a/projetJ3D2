@@ -20,7 +20,7 @@ from assets.PhysicsManager import PhysicsManager
 from assets.World import World
 from assets.Achille import Dungeon, Room
 
-from direct.gui.DirectGui import DirectFrame, DirectWaitBar
+from direct.gui.DirectGui import DirectFrame, DirectWaitBar, DirectButton
 from direct.gui import DirectGuiGlobals as DGG
 from direct.gui.OnscreenImage import OnscreenImage
 from direct.gui.OnscreenText import OnscreenText
@@ -93,6 +93,9 @@ MOB_SPAWN_MANA_COST = 25.0
 MOB_DROP_MANA_COST = 25.0
 KAYOU_DROP_MANA_COST = 45.0
 
+BOSS_TELEPORT_MANA_COST = 40.0
+BOSS_TELEPORT_COOLDOWN = 5.0
+BOSS_TELEPORT_ANIM_DELAY = 0.75
 HERO_DAMAGE = 8
 BOSS_DAMAGE = 230
 MOB_DAMAGE = HERO_MAX_HP
@@ -109,7 +112,7 @@ FALL_RECOVERY_SAFE_X_PADDING = 0.9
 FALL_RECOVERY_RAY_UP = 36.0
 FALL_RECOVERY_RAY_DOWN = 42.0
 FALL_RECOVERY_LIFT = 1.0
-SPAWN_FLOOR_LIFT = -7.0
+SPAWN_FLOOR_LIFT = -9.0
 MOB_ICON_PATH = os.path.join("assets", "images", "mob_icon.png")
 KAYOU_ICON_PATH = os.path.join("assets", "images", "kayou_icon.png")
 
@@ -152,6 +155,24 @@ class Game(ShowBase):
         self._setup_lighting()
         self._setup_ui_theme()
 
+        # Initialize and loop background music ambiance
+        self.bg_music = self.loader.loadMusic(os.path.join("assets", "music","game_ambiance.mp3"))
+        self.bg_music.setLoop(True)
+        self.bg_music.setVolume(0.5)
+        self.bg_music.play()
+
+        # Load hero running sound
+        self.sfx_hero_run = self.loader.loadSfx(os.path.join("assets", "music", "hero-run.mp3"))
+        self.sfx_hero_run.setLoop(True)
+
+        # Load hero attack sounds
+        self.sfx_hero_attack_hit = self.loader.loadSfx(os.path.join("assets", "music", "hero-attack-hit.mp3"))
+        self.sfx_hero_attack_miss = self.loader.loadSfx(os.path.join("assets", "music", "hero-attack-miss.mp3"))
+
+        self.sfx_hero_jump = self.loader.loadSfx(os.path.join("assets", "music", "hero-jump.mp3"))
+        self.sfx_hero_big_attack = self.loader.loadSfx(os.path.join("assets", "music", "hero-jump-attack.mp3"))
+        self.sfx_hero_death = self.loader.loadSfx(os.path.join("assets", "music", "hero-death.mp3"))
+
         self.PORT = int(os.getenv("DUNGEON_ARISE_PORT", str(DEFAULT_PORT)))
         self.ws_host = os.getenv("DUNGEON_ARISE_HOST", DEFAULT_HOST)
         self.ws_uri = f"ws://{self.ws_host}:{self.PORT}"
@@ -190,6 +211,7 @@ class Game(ShowBase):
         self.boss_hp = BOSS_MAX_HP
         self.boss_mana = BOSS_MAX_MANA
         self.hero_mana = 0.0
+        self.hero_was_jumping = False
         self.hero_level = 0
         self.hero_mob_kills = 0
         self.boss_phase_unlocked = False
@@ -198,7 +220,7 @@ class Game(ShowBase):
         self.hero_start_pos: Vec3 | None = None
         self.hero_respawn_count = 0
         self.hero_death_count = 0
-        self.max_respawns = 99  # 99 lives (configurable)
+        self.max_respawns = 10  # 99 lives (configurable)
         self.hero_max_hp = HERO_MAX_HP  
 
         self.last_attack_times = {"hero": 0.0, "boss": 0.0, "mob": 0.0}
@@ -260,6 +282,7 @@ class Game(ShowBase):
         self.accept("d", self._set_free_camera_key, ["d", True])
         self.accept("d-up", self._set_free_camera_key, ["d", False])
         self._ui_consumed_click = False
+        self.accept("t", self._boss_teleport_request)
         self.accept("mouse1", self._on_mouse1)
         self.accept("mouse1-up", self._on_mouse1_up)
 
@@ -1877,7 +1900,7 @@ class Game(ShowBase):
         bounds = self._nearest_module_bounds(float(pos.x))
         if bounds is not None:
             left, right, bottom, top = bounds
-            return float(pos.z) < bottom - FALL_RECOVERY_DEPTH
+            return float(pos.z) < bottom - FALL_RECOVERY_DEPTH or float(pos.z) > top + FALL_RECOVERY_DEPTH
 
         min_bound = getattr(self.world, "_min_bound", None)
         if min_bound is not None:
@@ -2204,6 +2227,66 @@ class Game(ShowBase):
         self._setup_hero_ui()
         self._setup_boss_ui()
         self._setup_boss_inventory_ui()
+        self._setup_game_over_ui()
+
+    def _setup_game_over_ui(self):
+        palette = self.ui_palette
+        self.game_over_root = self._make_fantasy_panel(
+            self.ui_root,
+            (-0.45, 0.45, -0.25, 0.25),
+            (0, 0, 0),
+            name="game_over"
+        )
+        self.game_over_root.hide()
+        
+        self.game_over_title = self._make_ui_text(
+            text="",
+            pos=(0, 0.08),
+            align=TextNode.ACenter,
+            scale=0.12,
+            fg=palette["gold"],
+            shadow=(0, 0, 0, 0.8),
+            mayChange=True,
+            parent=self.game_over_root
+        )
+        
+        self.restart_btn = DirectButton(
+            parent=self.game_over_root,
+            text="RESTART",
+            scale=0.06,
+            pos=(0, 0, -0.1),
+            command=self._restart_game,
+            relief=DGG.FLAT,
+            frameColor=palette["gold_dim"],
+            text_fg=palette["text"],
+            text_font=self.ui_font,
+            pad=(0.4, 0.2)
+        )
+
+    def _restart_game(self):
+        self.winner = None
+        self.game_over_root.hide()
+        self.hero_hp = HERO_MAX_HP
+        self.hero_max_hp = HERO_MAX_HP
+        self.boss_hp = BOSS_MAX_HP
+        self.boss_mana = BOSS_MAX_MANA
+        self.hero_mana = 0.0
+        self.hero_level = 0
+        self.hero_mob_kills = 0
+        self.hero_respawn_count = 0
+        self.hero_death_count = 0
+        self._reset_boss_phase(announce=True)
+        if self.hero and self.hero_start_pos:
+            self.hero.np.setPos(self.hero_start_pos)
+            self.hero.node.setLinearVelocity(Vec3(0, 0, 0))
+        if self.boss:
+            bx = self.max_x - 5.0
+            bz = self._get_spawn_z_on_base(bx, "end", 10.0)
+            self.boss.np.setPos(Vec3(bx, 0, bz))
+            self.boss.node.setLinearVelocity(Vec3(0, 0, 0))
+        for mid in list(self.local_mobs.keys()):
+            self._destroy_local_mob(mid)
+        self._set_status("Game Restarted.")
 
     def _setup_hero_ui(self):
         palette = self.ui_palette
@@ -3898,52 +3981,6 @@ class Game(ShowBase):
         self.boss_phase_unlocked = True
         self._set_status("Boss is now vulnerable.")
 
-        # Constrain the hero and camera to the boss base area.
-        try:
-            base_min = None
-            base_max = None
-            if self.world and getattr(self.world, "module_meta", []):
-                last_idx = len(self.world.module_meta) - 1
-                meta = self.world.module_meta[last_idx]
-                node = getattr(self.world, "module_nodes", [])[last_idx]
-                center_offset = float(meta.get("center_offset", 0.0))
-                width = float(meta.get("width", 0.0))
-                center_x = float(node.getX()) + center_offset
-                half = width * 0.5
-                base_min = center_x - half
-                base_max = center_x + half
-            else:
-                base_min = self.max_x - 30.0
-                base_max = self.max_x
-
-            if base_min is not None and base_max is not None:
-                # Show invisible physics walls around the base to block leaving
-                if hasattr(self.world, "show_base_walls"):
-                    try:
-                        self.world.show_base_walls(base_min, base_max)
-                    except Exception:
-                        pass
-
-                pad = 1.0
-                self.min_x = float(base_min) - pad
-                self.max_x = float(base_max) + pad
-
-                # Center the camera on the base
-                center = (self.min_x + self.max_x) * 0.5
-                self.camera_follow_x = center
-                self.camera.setPos(self.camera_follow_x, self.camera.getY(), self.camera.getZ())
-
-                # Clamp hero inside base area
-                if self.hero and hasattr(self.hero, "np"):
-                    hx = float(self.hero.np.getX())
-                    if hx < self.min_x:
-                        self.hero.np.setX(self.min_x)
-                    elif hx > self.max_x:
-                        self.hero.np.setX(self.max_x)
-        except Exception:
-            # Fail silently - boss phase still unlocked even if walls/centering fail
-            pass
-
         if announce:
             self._queue_message(
                 {
@@ -3960,19 +3997,8 @@ class Game(ShowBase):
         self.boss_phase_unlocked = False
         self._set_status("Boss phase reset. Trapped walls removed.")
 
-        # Hide base walls
-        if hasattr(self.world, "hide_base_walls"):
-            try:
-                self.world.hide_base_walls()
-            except Exception:
-                pass
-
-        # Restore normal map limits
-        self.min_x, self.max_x = self.world.setLimit()
-
-        # Restore camera follow
-        if self.hero:
-            self.camera_follow_x = self.hero.np.getX()
+        # Base wall hiding removed — no invisible walls are created anymore.
+        # (world.hide_base_walls call intentionally removed)
 
         if announce:
             self._queue_message(
@@ -3988,6 +4014,14 @@ class Game(ShowBase):
         if self.winner is not None:
             return
         self.winner = winner
+
+        is_winner = (winner == "hero" and self.player_id == 0) or (winner == "boss" and self.player_id == 1)
+        text = "YOU WON" if is_winner else "YOU LOST"
+        color = self.ui_palette["gold"] if is_winner else self.ui_palette["hp"]
+        self.game_over_title.setText(text)
+        self.game_over_title.setFg(color)
+        self.game_over_root.show()
+
         if winner == "hero":
             self._set_status("Hero wins.")
         else:
@@ -3998,6 +4032,8 @@ class Game(ShowBase):
     def _on_hero_death(self):
         """Handle hero death - either respawn or declare boss as winner."""
         self.hero_death_count += 1
+
+        self.sfx_hero_death.play()
         
         if self.hero_respawn_count >= self.max_respawns:
             # Max respawns reached, boss wins
@@ -4026,13 +4062,27 @@ class Game(ShowBase):
         self.hero_max_hp = HERO_MAX_HP + (self.hero_respawn_count * 15)
         self.hero_hp = self.hero_max_hp
         
-        # Reset boss phase first so camera/limits are restored before repositioning
-        self._reset_boss_phase(announce=True)
-
-        # Reset hero position and velocity to the very beginning
-        self.hero.np.setPos(self.hero_start_pos)
+        # Clear velocity FIRST before repositioning to prevent physics ejection
         self.hero.node.setLinearVelocity(Vec3(0, 0, 0))
         self.hero.node.setAngularVelocity(Vec3(0, 0, 0))
+        
+        # Reset boss phase BEFORE repositioning - this hides the physics walls that trap the hero
+        # Without this, physics engine will eject hero when repositioning near wall
+        self._reset_boss_phase(announce=True)
+
+        self.camera_follow_x = self.hero.np.getX()
+
+        # Teleport hero back to the starting position of the dungeon
+        # if self.boss_phase_unlocked:
+        #     respawn_x = self.goal_x + 2.0
+        #     respawn_z = self._get_spawn_z_on_base(respawn_x, "end", 10.0)
+        #     respawn_pos = Vec3(respawn_x, 0, respawn_z)
+        # else:
+        #     respawn_pos = self.hero_start_pos
+
+        self.hero.np.setPos(self.hero_start_pos)
+        
+        # Update camera to follow hero at the new position
         
         # Announce respawn
         self._set_status(f"Hero respawns! Power +{stat_bonus}, HP {self.hero_max_hp} (Respawn #{self.hero_respawn_count})")
@@ -4262,6 +4312,7 @@ class Game(ShowBase):
         if is_big:
             damage = int(damage * BIG_ATTACK_DAMAGE_MULTIPLIER)
             self._set_status("ULTIMATE ATTACK!")
+            self.sfx_hero_big_attack.play()
 
         hit_range = self.game_config.hero_attack_range + combo_range_bonus
 
@@ -4278,7 +4329,10 @@ class Game(ShowBase):
                 self._play_hit_vfx(mob.np, damage)
                 sent = True
 
-        if not sent:
+        if sent:
+            self.sfx_hero_attack_hit.play()
+        else:
+            self.sfx_hero_attack_miss.play()
             self._set_status("Attack missed.")
 
     def _get_controlled_np(self):
@@ -4457,6 +4511,77 @@ class Game(ShowBase):
 
         if self.controlled_entity == mob_id:
             self._set_controlled_entity("boss")
+
+    def _boss_teleport_request(self):
+        if self.player_id != 1 or self.winner or not self.boss:
+            return
+        if self.controlled_entity != "boss":
+            self._set_status("Only the boss can teleport.")
+            return
+
+        if not self._try_spend_boss_action(
+            "teleport",
+            BOSS_TELEPORT_MANA_COST,
+            BOSS_TELEPORT_COOLDOWN,
+            "Boss Teleport",
+        ):
+            return
+
+        anim_played = False
+        if self.boss.TELEPORT_ANIM:
+            anim_played = self.boss.play_named_animation(self.boss.TELEPORT_ANIM)
+        
+        if not anim_played:
+            self.boss.perform_attack(restart=True)
+        self._set_status("Casting teleport...")
+        
+        # Schedule the teleport to happen after the animation
+        self.taskMgr.doMethodLater(
+            BOSS_TELEPORT_ANIM_DELAY, self._execute_teleport_task, "boss_teleport_task"
+        )
+
+    def _perform_boss_teleport(self):
+        if not self.boss:
+            return
+
+        bounds = self._get_endpoint_base_bounds("end")
+        if bounds is None:
+            self._set_status("Boss base bounds not found for teleportation.")
+            return
+
+        left, right, bottom, top = bounds
+        padding_x = 2.0
+        min_x_teleport = left + padding_x
+        max_x_teleport = right - padding_x
+
+        if min_x_teleport > max_x_teleport:
+            min_x_teleport = (left + right) / 2.0
+            max_x_teleport = min_x_teleport
+
+        random_x = random.uniform(min_x_teleport, max_x_teleport)
+        target_z = self._get_spawn_z_on_base(random_x, "end", self.boss.np.getZ())
+        new_pos = Vec3(random_x, 0, target_z)
+
+        # VFX at old position
+        self._spawn_pulse_vfx(self.boss.np.getPos(self.render) + Vec3(0, 0, 1.5), (0.8, 0.2, 1.0, 0.9), 0.3, 0.4)
+
+        self.boss.node.setLinearVelocity(Vec3(0, 0, 0))
+        self.boss.node.setAngularVelocity(Vec3(0, 0, 0))
+        self.boss.np.setPos(new_pos)
+        self.boss.node.setActive(True)
+
+        # VFX at new position
+        self._spawn_pulse_vfx(new_pos + Vec3(0, 0, 1.5), (0.8, 0.2, 1.0, 0.9), 0.3, 0.4)
+        self._set_status("Boss teleported!")
+        self._queue_message(self._build_local_state_payload())
+
+    def _execute_teleport_task(self, task):
+        # Only complete teleport if the animation wasn't interrupted (e.g. by movement)
+        if self.boss and (self.boss.is_attacking or self.boss.is_playing_action):
+            self._perform_boss_teleport()
+        else:
+            self._set_status("Teleport interrupted.")
+        return task.done
 
     def _set_controlled_entity(self, entity: str | int):
         if self.player_id != 1 or not self.boss:
@@ -4738,6 +4863,25 @@ class Game(ShowBase):
 
         if self.hero:
             self.hero.update(dt)
+
+            # Update running sound for the local hero
+            if self.player_id == 0:
+                is_jumping = getattr(self.hero, "is_jumping", False)
+                if is_jumping and not self.hero_was_jumping:
+                    self.sfx_hero_jump.play()
+                self.hero_was_jumping = is_jumping
+
+                is_moving = getattr(self.hero, "is_moving", False)
+                is_in_air = is_jumping or getattr(self.hero, "is_climbing", False)
+                
+                # Play sound if moving on the ground, otherwise stop it
+                if is_moving and not is_in_air:
+                    if self.sfx_hero_run.status() != self.sfx_hero_run.PLAYING:
+                        self.sfx_hero_run.play()
+                else:
+                    if self.sfx_hero_run.status() == self.sfx_hero_run.PLAYING:
+                        self.sfx_hero_run.stop()
+
         if self.boss:
             self.boss.update(dt)
 

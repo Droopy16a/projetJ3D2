@@ -43,8 +43,8 @@ class Config:
 
     hero_attack_range: float = 4.0
     mob_attack_range: float = 4.0
-    kayou_attack_range: float = 6.0
-    boss_attack_range: float = 7.0
+    kayou_attack_range: float = 8.0
+    boss_attack_range: float = 15.0
 
     levels: list = field(default_factory=lambda: [
         {
