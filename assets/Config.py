@@ -18,7 +18,7 @@ class Config:
     debug_kayou_hitbox: bool = False
     debug_hitbox_logs: bool = False
     use_modular_world: bool = True
-    module_dir: str = "./assets/models/modules"
+    module_dir: str = "assets/models/modules"
     module_count: int = 12
     module_spacing: float = 0.2
     module_seed: int | None = None
@@ -30,16 +30,16 @@ class Config:
 
     player_model_visual_scale = 10.0
 
-    player_model: str = "./assets/models/herolowpoly.glb"
-    mob_model: str = "./assets/models/mobrw.glb"
+    player_model: str = "assets/models/herolowpoly.glb"
+    mob_model: str = "assets/models/mobrw.glb"
     mob_visual_scale: float = 0.72
-    kayou_model: str = "./assets/models/Kayou.glb"
+    kayou_model: str = "assets/models/Kayou.glb"
     kayou_visual_scale: float = 1.0
     kayou_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     mob_visual_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    cube_model: str = "./assets/models/box.glb"
-    sword_model: str = "./assets/models/sword.glb"
-    boss_model : str = "./assets/models/Boss_Roche.glb"
+    cube_model: str = "assets/models/box.glb"
+    sword_model: str = "assets/models/sword.glb"
+    boss_model : str = "assets/models/Boss_Roche.glb"
 
     hero_attack_range: float = 4.0
     mob_attack_range: float = 4.0
@@ -48,14 +48,14 @@ class Config:
 
     levels: list = field(default_factory=lambda: [
         {
-            "level_model": "./assets/models/modules/base.glb",
+            "level_model": "assets/models/modules/base.glb",
             "ignore": ["ignore*"],
             "size": 2.4,
             "pos": (0, 0, 0),
             "Hpr": (0, 0, 0)
         },
         {
-            "level_model": "./assets/models/modules/stair_U.glb",
+            "level_model": "assets/models/modules/stair_U.glb",
             "ignore": ["ignore*", "Stairs*"],
             "hitbox_include": ["collision*"],
             "size": 2.4,
@@ -63,7 +63,7 @@ class Config:
             "Hpr": (0, 0, 0)
         },
         {
-            "level_model": "./assets/models/modules/stair_D.glb",
+            "level_model": "assets/models/modules/stair_D.glb",
             "ignore": ["ignore*", "Stairs*"],
             "hitbox_include": ["collision*"],
             "size": 2.4,

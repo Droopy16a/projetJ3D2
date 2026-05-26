@@ -48,7 +48,6 @@ try:
 except ImportError:
     simplepbr = None
 
-
 loadPrcFileData("", "win-size 1920 1080")
 loadPrcFileData("", "basic-shaders-only #f")
 ConfigVariableString("bullet-filter-algorithm").setValue("groups-mask")
@@ -154,6 +153,8 @@ class Game(ShowBase):
         self.camera.setHpr(0, 0, 0)
         self._setup_lighting()
         self._setup_ui_theme()
+
+        
 
         # Initialize and loop background music ambiance
         self.bg_music = self.loader.loadMusic(os.path.join("assets", "music","game_ambiance.mp3"))
@@ -263,7 +264,7 @@ class Game(ShowBase):
         self._ui_pulse_time = 0.0
 
         self._setup_hud()
-        self._pulse_model_template = self.loader.loadModel("models/misc/sphere")
+        self._pulse_model_template = self.loader.loadModel("assets/models/sphere.egg.pz")
 
         self.accept("f", self.spawn_local_mob_request)
         self.accept("tab", self.cycle_control)

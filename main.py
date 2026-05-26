@@ -1,3 +1,5 @@
+from panda3d.core import loadPrcFileData
+
 from game_client import Game
 from menu import Menu
 

@@ -50,18 +50,18 @@ class World:
             self._build_static_world()
 
 
-        cube_shape = BulletBoxShape(Vec3(1, 1, 1))
-        cube_node = BulletRigidBodyNode('Cube')
-        cube_node.setMass(self.c.cube_mass)
-        cube_node.addShape(cube_shape, TransformState.makePos(Vec3(0, 0, 1)))
-        cube_node.setLinearFactor(Vec3(1, 0, 1))
-        cube_node.setAngularFactor(Vec3(0, 1, 0))
-        self.cube_np = render.attachNewNode(cube_node)
-        self.cube_np.setPos(2, 0, 0)
-        physics.attach(cube_node, self.cube_np)
-        cube_vis = loader.loadModel(self.c.cube_model)
-        cube_vis.reparentTo(self.cube_np)
-        cube_vis.setScale(1)
+        # cube_shape = BulletBoxShape(Vec3(1, 1, 1))
+        # cube_node = BulletRigidBodyNode('Cube')
+        # cube_node.setMass(self.c.cube_mass)
+        # cube_node.addShape(cube_shape, TransformState.makePos(Vec3(0, 0, 1)))
+        # cube_node.setLinearFactor(Vec3(1, 0, 1))
+        # cube_node.setAngularFactor(Vec3(0, 1, 0))
+        # self.cube_np = render.attachNewNode(cube_node)
+        # self.cube_np.setPos(2, 0, 0)
+        # physics.attach(cube_node, self.cube_np)
+        # cube_vis = loader.loadModel(self.c.cube_model)
+        # cube_vis.reparentTo(self.cube_np)
+        # cube_vis.setScale(1)
 
         self.end_wall_nps: list = []
         self.base_wall_nps: list = []

@@ -1,16 +1,3 @@
 Known pipe types:
   wglGraphicsPipe
 (all display modules loaded.)
-:audio(error):   load_dso(libp3openal_audio.so) failed, will use NullAudioManager
-:audio(error):     Path not found
-:loader(error): Extension of file ./assets/models/modules/base.glb is unrecognized; cannot load.
-Currently known scene file types are:
-  Bam                             .bam
-:loader(error): Couldn't load file ./assets/models/modules/base.glb: all matching files on model path invalid (the model path is currently: "/c/Users/33767/Downloads/projetJ3D2/build/win_amd64;/..;/../models")
-Traceback (most recent call last):
-  File "__main__", line 4733, in <module>
-  File "__main__", line 173, in __init__
-  File "assets.World", line 46, in __init__
-  File "assets.World", line 118, in _build_modular_world
-  File "direct.showbase.Loader", line 308, in loadModel
-OSError: Could not load model file(s): [Filename('./assets/models/modules/base.glb')]
