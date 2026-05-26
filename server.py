@@ -41,7 +41,7 @@ def get_broadcast_addresses(local_ip: str) -> list[str]:
 
 def get_world_seed(local_ip: str) -> int:
     """Derive the shared world seed from the server address."""
-    seed_src = f"DUNGEON_ARISE_WORLD:{PORT}"
+    seed_src = f"{local_ip}:{PORT}"
     return int(hashlib.sha256(seed_src.encode()).hexdigest()[:8], 16)
 
 
