@@ -128,7 +128,9 @@ class World:
             width = float(max_bound.x - min_bound.x)
             center_offset = float((min_bound.x + max_bound.x) * 0.5)
 
-            module.setPos(current_x - min_bound.x, 0, -min_bound.z)
+            # For modular verticality, we must align by origins (floor level)
+            # rather than forcing the bottom of the bounding box to Z=0.
+            module.setPos(current_x - min_bound.x, 0, 0)
             apply_bullet_hitboxes(
                 module,
                 self.physics.world,
@@ -146,7 +148,7 @@ class World:
                     "max_bound": max_bound,
                     "width": width,
                     "center_offset": center_offset,
-                    "base_z": float(module.getZ()),
+                    "base_z": 0.0,
                     "index": module_index,
                     "locked_endpoint": bool(
                         base_def is not None

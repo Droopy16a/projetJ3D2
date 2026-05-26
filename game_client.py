@@ -1603,13 +1603,13 @@ class Game(ShowBase):
             old_z = float(node.getZ())
             node.setX(current_x - float(min_bound.x))
             level_offset = levels.get(room, 0.0)
-            node.setZ(meta["base_z"] + level_offset)
+            node.setZ(level_offset)
             self._sync_module_physics(node)
             dx = float(node.getX()) - old_x
             dz = float(node.getZ()) - old_z
             if abs(dx) > 1e-5 or abs(dz) > 1e-5:
                 move_deltas.append({"module_id": id(node), "bounds": old_bounds, "delta": Vec3(dx, 0, dz), "width": width})
-            current_x += width
+            current_x += width + self.world.module_spacing
         self._teleport_entities_with_modules(move_deltas, entity_module_ids)
         self.world.recompute_bounds()
         self.min_x, self.max_x = self.world.setLimit()
@@ -1914,14 +1914,17 @@ class Game(ShowBase):
             current_level += self._module_level_delta(meta)
         return levels
 
-    def _module_level_delta(self, meta: dict, prev = None) -> float:
-        key = f"{meta.get('name', '')} {meta.get('path', '')}".lower().replace("-", "_")
+    def _module_level_delta(self, meta: dict) -> float:
+        key = f"{meta.get('name', '')} {meta.get('path', '')}".lower().replace("-", "_").replace(" ", "_")
+        # Derive height change from the model's actual vertical extent
+        height = float(meta["max_bound"].z - meta["min_bound"].z)
+        
         if "base" in key:
             return 0.0
         if "stair_u" in key:
-            return 9.6
+            return height
         if "stair_d" in key:
-            return -9.6
+            return -height
         return 0.0
 
     def _on_mouse1(self):
