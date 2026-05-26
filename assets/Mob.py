@@ -55,6 +55,8 @@ class Mob(DirectObject.DirectObject):
         self.np.setCollideMask(bit(index))
 
         self.actor = Actor(self.config.mob_model)
+        self.actor.setHpr(-180, 0, 0)
+        self.actor.setScale(float(self.config.mob_visual_scale))
         self.actor.reparentTo(self.np)
         # self.actor.setScale(float(self.config.mob_visual_scale))
         # ox, oy, oz = self.config.mob_visual_offset
@@ -63,8 +65,8 @@ class Mob(DirectObject.DirectObject):
         anims = set(self.actor.getAnimNames()) if self.actor else set()
         
         # Improved animation detection (case-insensitive and partial matching)
-        self.ATTACK_ANIM = next((a for a in anims if 'atack' in a.lower() or 'attack' in a.lower()), None)
-        self.WALK_ANIM = next((a for a in anims if 'run' in a.lower() or 'walk' in a.lower()), None)
+        self.ATTACK_ANIM = next((a for a in anims if 'Attack' in a.lower() or 'attack' in a.lower()), None)
+        self.WALK_ANIM = next((a for a in anims if 'Walk.001' in a.lower() or 'walk' in a.lower()), None)
         self.IDLE_ANIM = next((a for a in anims if 'idle' in a.lower()), None)
         
         # Fallbacks
@@ -359,7 +361,7 @@ class Mob(DirectObject.DirectObject):
             if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
                 if self.WALK_ANIM:
                     self._loop_anim(self.WALK_ANIM)
-            if ctrl and ctrl.getFrame() == 17:
+            if ctrl and ctrl.getFrame() == 40:
                 GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
 
         if not ledge.hasHit():
@@ -418,7 +420,7 @@ class Mob(DirectObject.DirectObject):
                 if ctrl and ctrl.getFrame() >= ctrl.getNumFrames() - 1:
                     if self.WALK_ANIM:
                         self._loop_anim(self.WALK_ANIM)
-                if ctrl and ctrl.getFrame() == 17:
+                if ctrl and ctrl.getFrame() == 40:
                     GLOBAL_STATE.get_camera().shake_camera(0.3, 0.2)
 
     def destroy(self):
