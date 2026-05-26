@@ -15,7 +15,7 @@ class Config:
     ground_half_extents: Vec3 = Vec3(500, 500, 10)
     debug_physics: bool = False
     debug_rays: bool = False
-    debug_kayou_hitbox: bool = True
+    debug_kayou_hitbox: bool = False
     debug_hitbox_logs: bool = False
     use_modular_world: bool = True
     module_dir: str = "./assets/models/modules"

@@ -87,8 +87,8 @@ HERO_MAX_HP = 130
 BOSS_MAX_HP = 220
 MOB_MAX_HP = 65
 BOSS_MAX_MANA = 100.0
-BOSS_MANA_REGEN = 12.0
-DUNGEON_SWAP_MANA_COST = 35.0
+BOSS_MANA_REGEN = 6.0
+DUNGEON_SWAP_MANA_COST = 65.0
 MOB_SPAWN_MANA_COST = 25.0
 MOB_DROP_MANA_COST = 25.0
 KAYOU_DROP_MANA_COST = 45.0
@@ -1868,16 +1868,15 @@ class Game(ShowBase):
             safe_left = safe_right = (left + right) * 0.5
         target_x = max(safe_left, min(float(pos.x), safe_right))
 
-        from_pos = Vec3(target_x, 0, top + FALL_RECOVERY_RAY_UP)
-        to_pos = Vec3(target_x, 0, bottom - FALL_RECOVERY_RAY_DOWN)
-        result = self.physics.world.rayTestClosest(from_pos, to_pos)
-        floor_z = float(result.getHitPos().z) if result.hasHit() else float(top)
-        return Vec3(target_x, 0, floor_z + FALL_RECOVERY_LIFT)
+        # Position inside the module (e.g., center height)
+        target_z = (bottom + top) * 0.5
+        return Vec3(target_x, 0, target_z)
 
     def _should_recover_fall(self, pos: Vec3) -> bool:
         bounds = self._nearest_module_bounds(float(pos.x))
         if bounds is not None:
-            return float(pos.z) < bounds[2] - FALL_RECOVERY_DEPTH
+            left, right, bottom, top = bounds
+            return float(pos.z) < bottom - FALL_RECOVERY_DEPTH or float(pos.z) > top + FALL_RECOVERY_DEPTH
 
         min_bound = getattr(self.world, "_min_bound", None)
         if min_bound is not None:
