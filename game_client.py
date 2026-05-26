@@ -172,7 +172,7 @@ class Game(ShowBase):
             self.physics.enable_debug()
         self.world = World(self.game_config, self.render, self.loader, self.physics, index=0)
         self.min_x, self.max_x = self.world.setLimit()
-        self.goal_x = self.max_x - 2.0
+        self._update_goal_x()
         self._setup_boss_editor()
         self._setup_hero_map()
 
@@ -1633,7 +1633,7 @@ class Game(ShowBase):
         self._teleport_entities_with_modules(move_deltas, entity_module_ids)
         self.world.recompute_bounds()
         self.min_x, self.max_x = self.world.setLimit()
-        self.goal_x = self.max_x - 2.0
+        self._update_goal_x()
         self._sync_hero_map_from_world()
 
     def _module_world_bounds(self, node, meta: dict) -> tuple[float, float, float, float]:
@@ -1833,7 +1833,8 @@ class Game(ShowBase):
             if self.boss:
                 yield "boss", self.boss
             for mob_id, mob in self.local_mobs.items():
-                yield f"mob:{mob_id}", mob
+                if self.local_mob_hp.get(mob_id, 0) > 0:
+                    yield f"mob:{mob_id}", mob
 
     def _nearest_module_bounds(self, x: float) -> tuple[float, float, float, float] | None:
         best_bounds = None
@@ -1876,7 +1877,7 @@ class Game(ShowBase):
         bounds = self._nearest_module_bounds(float(pos.x))
         if bounds is not None:
             left, right, bottom, top = bounds
-            return float(pos.z) < bottom - FALL_RECOVERY_DEPTH or float(pos.z) > top + FALL_RECOVERY_DEPTH
+            return float(pos.z) < bottom - FALL_RECOVERY_DEPTH
 
         min_bound = getattr(self.world, "_min_bound", None)
         if min_bound is not None:
@@ -3343,6 +3344,18 @@ class Game(ShowBase):
 
         self._update_hud()
 
+    def _update_goal_x(self):
+        if self.world and getattr(self.world, "module_meta", []):
+            last_idx = len(self.world.module_meta) - 1
+            meta = self.world.module_meta[last_idx]
+            node = getattr(self.world, "module_nodes", [])[last_idx]
+            center_offset = float(meta.get("center_offset", 0.0))
+            width = float(meta.get("width", 0.0))
+            center_x = float(node.getX()) + center_offset
+            self.goal_x = center_x - width * 0.5
+        else:
+            self.goal_x = self.max_x - 2.0
+
     def _ensure_boss(self, boss_start: Vec3, mode: str) -> Boss:
         if self.boss:
             self.boss.set_mode(mode)
@@ -3614,6 +3627,8 @@ class Game(ShowBase):
             self.hero_mob_kills = max(self.hero_mob_kills, int(payload.get("hero_mob_kills", self.hero_mob_kills)))
             if bool(payload.get("unlocked", False)):
                 self._unlock_boss_phase(announce=False)
+            else:
+                self._reset_boss_phase(announce=False)
         elif payload_type == "hero_progress":
             self._apply_remote_hero_progress(payload)
         elif payload_type == "game_over":
@@ -3667,6 +3682,8 @@ class Game(ShowBase):
         self.hero_mob_kills = max(self.hero_mob_kills, int(payload.get("hero_mob_kills", self.hero_mob_kills)))
         if bool(payload.get("boss_phase_unlocked", False)):
             self._unlock_boss_phase(announce=False)
+        else:
+            self._reset_boss_phase(announce=False)
 
     def _apply_remote_boss_state(self, payload: dict[str, Any]):
         if not self.boss:
@@ -3687,6 +3704,8 @@ class Game(ShowBase):
         self.boss_hp = int(payload.get("boss_hp", self.boss_hp))
         if bool(payload.get("boss_phase_unlocked", False)):
             self._unlock_boss_phase(announce=False)
+        else:
+            self._reset_boss_phase(announce=False)
 
         mobs = payload.get("mobs", [])
         if isinstance(mobs, list):
@@ -3739,7 +3758,7 @@ class Game(ShowBase):
         self._teleport_entities_with_modules(move_deltas, entity_module_ids)
         self.world.recompute_bounds()
         self.min_x, self.max_x = self.world.setLimit()
-        self.goal_x = self.max_x - 2.0
+        self._update_goal_x()
         self._sync_hero_map_from_world()
 
     def _sync_remote_mobs(self, mobs_data: list[dict[str, Any]]):
@@ -3876,8 +3895,6 @@ class Game(ShowBase):
     def _unlock_boss_phase(self, announce: bool):
         if self.boss_phase_unlocked:
             return
-        if not self._hero_is_boss_ready():
-            return
         self.boss_phase_unlocked = True
         self._set_status("Boss is now vulnerable.")
 
@@ -3885,22 +3902,20 @@ class Game(ShowBase):
         try:
             base_min = None
             base_max = None
-            for idx, meta in enumerate(getattr(self.world, "module_meta", [])):
-                name = (meta.get("name") or "").lower()
-                if "base" in name or bool(meta.get("locked_endpoint", False)):
-                    node = getattr(self.world, "module_nodes", [])[idx]
-                    center_offset = float(meta.get("center_offset", 0.0))
-                    width = float(meta.get("width", 0.0))
-                    center_x = float(node.getX()) + center_offset
-                    half = width * 0.5
-                    mmin = center_x - half
-                    mmax = center_x + half
-                    if base_min is None:
-                        base_min = mmin
-                        base_max = mmax
-                    else:
-                        base_min = min(base_min, mmin)
-                        base_max = max(base_max, mmax)
+            if self.world and getattr(self.world, "module_meta", []):
+                last_idx = len(self.world.module_meta) - 1
+                meta = self.world.module_meta[last_idx]
+                node = getattr(self.world, "module_nodes", [])[last_idx]
+                center_offset = float(meta.get("center_offset", 0.0))
+                width = float(meta.get("width", 0.0))
+                center_x = float(node.getX()) + center_offset
+                half = width * 0.5
+                base_min = center_x - half
+                base_max = center_x + half
+            else:
+                base_min = self.max_x - 30.0
+                base_max = self.max_x
+
             if base_min is not None and base_max is not None:
                 # Show invisible physics walls around the base to block leaving
                 if hasattr(self.world, "show_base_walls"):
@@ -3934,6 +3949,36 @@ class Game(ShowBase):
                 {
                     "type": "phase",
                     "unlocked": True,
+                    "hero_level": self.hero_level,
+                    "hero_mob_kills": self.hero_mob_kills,
+                }
+            )
+
+    def _reset_boss_phase(self, announce: bool):
+        if not self.boss_phase_unlocked:
+            return
+        self.boss_phase_unlocked = False
+        self._set_status("Boss phase reset. Trapped walls removed.")
+
+        # Hide base walls
+        if hasattr(self.world, "hide_base_walls"):
+            try:
+                self.world.hide_base_walls()
+            except Exception:
+                pass
+
+        # Restore normal map limits
+        self.min_x, self.max_x = self.world.setLimit()
+
+        # Restore camera follow
+        if self.hero:
+            self.camera_follow_x = self.hero.np.getX()
+
+        if announce:
+            self._queue_message(
+                {
+                    "type": "phase",
+                    "unlocked": False,
                     "hero_level": self.hero_level,
                     "hero_mob_kills": self.hero_mob_kills,
                 }
@@ -3981,7 +4026,10 @@ class Game(ShowBase):
         self.hero_max_hp = HERO_MAX_HP + (self.hero_respawn_count * 15)
         self.hero_hp = self.hero_max_hp
         
-        # Reset hero position and velocity
+        # Reset boss phase first so camera/limits are restored before repositioning
+        self._reset_boss_phase(announce=True)
+
+        # Reset hero position and velocity to the very beginning
         self.hero.np.setPos(self.hero_start_pos)
         self.hero.node.setLinearVelocity(Vec3(0, 0, 0))
         self.hero.node.setAngularVelocity(Vec3(0, 0, 0))
@@ -4217,7 +4265,7 @@ class Game(ShowBase):
 
         hit_range = self.game_config.hero_attack_range + combo_range_bonus
 
-        if self.boss_phase_unlocked and self._entity_attack_distance(self.hero.np, self.boss.np) <= hit_range:
+        if self._entity_attack_distance(self.hero.np, self.boss.np) <= hit_range:
             self._queue_message({"type": "attack", "target": "boss", "damage": damage})
             self._play_hit_vfx(self.boss.np, damage)
             sent = True
@@ -4307,8 +4355,6 @@ class Game(ShowBase):
             return
 
         if self.player_id == 1 and target == "boss":
-            if not self.boss_phase_unlocked:
-                return
             self.boss_hp = max(0, self.boss_hp - damage)
             if self.boss:
                 self._play_hit_vfx(self.boss.np, damage)
@@ -4707,14 +4753,7 @@ class Game(ShowBase):
             self._update_ai_attacks()
 
         if self.player_id == 0 and self.hero and not self.boss_phase_unlocked and self.hero.np.getX() >= self.goal_x:
-            if self._hero_is_boss_ready():
-                self._unlock_boss_phase(announce=True)
-            else:
-                now = time.monotonic()
-                if now - self.last_boss_gate_status_time > 2.0:
-                    self.last_boss_gate_status_time = now
-                    left = max(0, BOSS_READY_HERO_LEVEL - self.hero_level)
-                    self._set_status(f"Too weak for the boss. Defeat {left} more mobs.")
+            self._unlock_boss_phase(announce=True)
 
         self._update_vfx(dt)
         if self.boss_inventory_open:
