@@ -174,6 +174,16 @@ class Menu(ShowBase):
         return task.cont
 
     def start_game(self):
+        # Attempt a quick discovery to pick up a server-provided world seed/host
+        try:
+            result = discover_server(timeout=1)
+            if result:
+                # discover_server may set DUNGEON_WORLD_SEED; ensure host is set too
+                self.server_host = result
+                os.environ["DUNGEON_ARISE_HOST"] = result.split(":")[0]
+        except Exception:
+            pass
+
         self.start_requested = True
         self.taskMgr.stop()
 

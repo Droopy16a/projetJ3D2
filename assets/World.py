@@ -64,6 +64,7 @@ class World:
         cube_vis.setScale(1)
 
         self.end_wall_nps: list = []
+        self.base_wall_nps: list = []
         self._min_bound, self._max_bound = self.level_root.get_tight_bounds()
         self._setup_end_walls()
 
@@ -222,3 +223,49 @@ class World:
                 wall_np.node().setTransformDirty()
             if hasattr(wall_np.node(), "setActive"):
                 wall_np.node().setActive(True)
+
+    def show_base_walls(self, min_x: float, max_x: float, padding: float = 0.5):
+        """Create or position invisible walls to confine the boss base area and show them."""
+        if not hasattr(self, "base_wall_nps"):
+            self.base_wall_nps = []
+        # Create walls if missing
+        if len(self.base_wall_nps) < 2:
+            for name in ("boss_base_start_wall", "boss_base_end_wall"):
+                wall_node = BulletRigidBodyNode(name)
+                wall_node.setMass(0)
+                wall_node.addShape(
+                    BulletBoxShape(
+                        Vec3(
+                            END_WALL_THICKNESS * 0.5,
+                            END_WALL_Y_HALF_EXTENT,
+                            END_WALL_HALF_HEIGHT,
+                        )
+                    )
+                )
+                wall_np = self.render.attachNewNode(wall_node)
+                wall_np.hide()
+                self.physics.attach(wall_node, wall_np)
+                self.base_wall_nps.append(wall_np)
+
+        center_z = float((self._min_bound.z + self._max_bound.z) * 0.5) if self._min_bound and self._max_bound else 0.0
+        left_x = float(min_x) - padding
+        right_x = float(max_x) + padding
+        specs = ((self.base_wall_nps[0], left_x), (self.base_wall_nps[1], right_x))
+        for wall_np, x in specs:
+            wall_np.setPos(x, 0, center_z)
+            wall_np.show()
+            if hasattr(wall_np.node(), "setTransformDirty"):
+                wall_np.node().setTransformDirty()
+            if hasattr(wall_np.node(), "setActive"):
+                wall_np.node().setActive(True)
+
+    def hide_base_walls(self):
+        if not hasattr(self, "base_wall_nps"):
+            return
+        for wall_np in self.base_wall_nps:
+            wall_np.hide()
+            if hasattr(wall_np.node(), "setActive"):
+                try:
+                    wall_np.node().setActive(False)
+                except Exception:
+                    pass

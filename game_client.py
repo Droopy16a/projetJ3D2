@@ -79,7 +79,7 @@ AI_ATTACK_COOLDOWN = 1.05
 SPAWN_COOLDOWN = 1.75
 DUNGEON_SWAP_COOLDOWN = 1.25
 MOB_DROP_COOLDOWN = 1.0
-ATTACK_RANGE = 2.8
+ATTACK_RANGE = 4
 MAX_ACTIVE_MOBS = 6
 
 HERO_MAX_HP = 130
@@ -92,7 +92,7 @@ MOB_SPAWN_MANA_COST = 25.0
 MOB_DROP_MANA_COST = 25.0
 
 HERO_DAMAGE = 8
-BOSS_DAMAGE = HERO_MAX_HP
+BOSS_DAMAGE = 230
 MOB_DAMAGE = HERO_MAX_HP
 BOSS_READY_HERO_LEVEL = 9
 HERO_DAMAGE_PER_LEVEL = 7
@@ -178,6 +178,13 @@ class Game(ShowBase):
         self.hero_mob_kills = 0
         self.boss_phase_unlocked = False
         self.winner: str | None = None
+        
+        # Roguelike respawn system
+        self.hero_start_pos: Vec3 | None = None
+        self.hero_respawn_count = 0
+        self.hero_death_count = 0
+        self.max_respawns = 99  # 99 lives (configurable)
+        self.hero_max_hp = HERO_MAX_HP  # Dynamic max HP that increases per respawn
 
         self.last_attack_times = {"hero": 0.0, "boss": 0.0, "mob": 0.0}
         self.last_boss_action_times = {"swap": -999.0, "spawn": -999.0, "drop": -999.0}
@@ -1920,6 +1927,10 @@ class Game(ShowBase):
         key = f"{meta.get('name', '')} {meta.get('path', '')}".lower().replace("-", "_")
         key_prev = f"{prev.get('name', '')} {prev.get('path', '')}".lower().replace("-", "_") if prev else ""
         if "base" in key:
+            if "stair_u" in key_prev:
+                return 9.6
+            # if "stair_d" in key_prev:
+            #     return -9.6
             return 0.0
         if "stair_u" in key and "stair_d" not in key_prev:
             return 9.6
@@ -2026,8 +2037,8 @@ class Game(ShowBase):
         )
         self.hero_bar = DirectWaitBar(
             text="",
-            range=HERO_MAX_HP,
-            value=HERO_MAX_HP,
+            range=300,
+            value=300,
             barColor=(0.25, 0.85, 0.45, 0.9),
             frameColor=panel_dark,
             frameSize=(0, 0.52, -0.02, 0.02),
@@ -2035,7 +2046,7 @@ class Game(ShowBase):
             parent=self.right_panel,
         )
         self.hero_hp_text = self._make_ui_text(
-            text=f"{HERO_MAX_HP}/{HERO_MAX_HP}",
+            text=f"{self.hero_max_hp}/{self.hero_max_hp}",
             pos=(0.26, -0.01),
             align=TextNode.ACenter,
             scale=0.032,
@@ -3085,11 +3096,11 @@ class Game(ShowBase):
             phase_text = ""
         self._set_text_if_changed("phase_label", self.phase_label, phase_text)
 
-        hero_hp = max(0, min(self.hero_hp, HERO_MAX_HP))
+        hero_hp = max(0, min(self.hero_hp, self.hero_max_hp))
         boss_hp = max(0, min(self.boss_hp, BOSS_MAX_HP))
-        self._set_widget_number_if_changed("hero_bar_range", self.hero_bar, "range", HERO_MAX_HP)
+        self._set_widget_number_if_changed("hero_bar_range", self.hero_bar, "range", self.hero_max_hp)
         self._set_widget_number_if_changed("hero_bar_value", self.hero_bar, "value", hero_hp)
-        self._set_text_if_changed("hero_hp_text", self.hero_hp_text, f"{hero_hp}/{HERO_MAX_HP}")
+        self._set_text_if_changed("hero_hp_text", self.hero_hp_text, f"{hero_hp}/{self.hero_max_hp}")
         self._set_widget_number_if_changed("boss_bar_range", self.boss_bar, "range", BOSS_MAX_HP)
         self._set_widget_number_if_changed("boss_bar_value", self.boss_bar, "value", boss_hp)
         self._set_text_if_changed("boss_hp_text", self.boss_hp_text, f"{boss_hp}/{BOSS_MAX_HP}")
@@ -3203,6 +3214,7 @@ class Game(ShowBase):
 
         if not self.hero:
             self.hero = Character(self.game_config, self.render, self.loader, self.physics, start_pos=hero_start)
+            self.hero_start_pos = hero_start
         if self.player_id == 0:
             self._ensure_boss(boss_start, "REMOTE")
             self.controlled_entity = "hero"
@@ -3486,6 +3498,15 @@ class Game(ShowBase):
             winner = payload.get("winner")
             if winner in ("hero", "boss"):
                 self._declare_winner(winner, announce=False)
+        elif payload_type == "hero_respawn":
+            self._apply_remote_hero_respawn(payload)
+
+    def _apply_remote_hero_respawn(self, payload: dict[str, Any]):
+        """Handle hero respawn notification from network."""
+        self.hero_respawn_count = max(self.hero_respawn_count, int(payload.get("respawn_count", self.hero_respawn_count)))
+        self.hero_level = max(self.hero_level, int(payload.get("hero_level", self.hero_level)))
+        self.hero_mob_kills = max(self.hero_mob_kills, int(payload.get("hero_mob_kills", self.hero_mob_kills)))
+        self.hero_hp = int(payload.get("hero_hp", self.hero_hp))
 
     def _apply_remote_hero_progress(self, payload: dict[str, Any]):
         level = payload.get("level")
@@ -3723,6 +3744,55 @@ class Game(ShowBase):
             return
         self.boss_phase_unlocked = True
         self._set_status("Boss is now vulnerable.")
+
+        # Constrain the hero and camera to the boss base area.
+        try:
+            base_min = None
+            base_max = None
+            for idx, meta in enumerate(getattr(self.world, "module_meta", [])):
+                name = (meta.get("name") or "").lower()
+                if "base" in name or bool(meta.get("locked_endpoint", False)):
+                    node = getattr(self.world, "module_nodes", [])[idx]
+                    center_offset = float(meta.get("center_offset", 0.0))
+                    width = float(meta.get("width", 0.0))
+                    center_x = float(node.getX()) + center_offset
+                    half = width * 0.5
+                    mmin = center_x - half
+                    mmax = center_x + half
+                    if base_min is None:
+                        base_min = mmin
+                        base_max = mmax
+                    else:
+                        base_min = min(base_min, mmin)
+                        base_max = max(base_max, mmax)
+            if base_min is not None and base_max is not None:
+                # Show invisible physics walls around the base to block leaving
+                if hasattr(self.world, "show_base_walls"):
+                    try:
+                        self.world.show_base_walls(base_min, base_max)
+                    except Exception:
+                        pass
+
+                pad = 1.0
+                self.min_x = float(base_min) - pad
+                self.max_x = float(base_max) + pad
+
+                # Center the camera on the base
+                center = (self.min_x + self.max_x) * 0.5
+                self.camera_follow_x = center
+                self.camera.setPos(self.camera_follow_x, self.camera.getY(), self.camera.getZ())
+
+                # Clamp hero inside base area
+                if self.hero and hasattr(self.hero, "np"):
+                    hx = float(self.hero.np.getX())
+                    if hx < self.min_x:
+                        self.hero.np.setX(self.min_x)
+                    elif hx > self.max_x:
+                        self.hero.np.setX(self.max_x)
+        except Exception:
+            # Fail silently - boss phase still unlocked even if walls/centering fail
+            pass
+
         if announce:
             self._queue_message(
                 {
@@ -3743,6 +3813,57 @@ class Game(ShowBase):
             self._set_status("Boss wins.")
         if announce:
             self._queue_message({"type": "game_over", "winner": winner})
+
+    def _on_hero_death(self):
+        """Handle hero death - either respawn or declare boss as winner."""
+        self.hero_death_count += 1
+        
+        if self.hero_respawn_count >= self.max_respawns:
+            # Max respawns reached, boss wins
+            self._set_status(f"Hero defeated! (Died {self.hero_death_count} times)")
+            self._declare_winner("boss", announce=True)
+        else:
+            # Respawn the hero stronger
+            self._respawn_hero()
+
+    def _respawn_hero(self):
+        """Respawn the hero at the starting position with stat bonuses."""
+        if not self.hero or self.hero_start_pos is None:
+            return
+        
+        self.hero_respawn_count += 1
+        
+        # Grant stat bonuses based on levels achieved
+        # Bonus: +2 level per respawn + 50% of levels earned in last run
+        stat_bonus = self.hero_respawn_count * 2 + max(0, self.hero_level // 2)
+        self.hero_level += stat_bonus
+        
+        # Also increase mob kills proportionally to maintain progression
+        self.hero_mob_kills += stat_bonus
+        
+        # Increase hero max HP per respawn (+15 HP per respawn)
+        self.hero_max_hp = HERO_MAX_HP + (self.hero_respawn_count * 15)
+        self.hero_hp = self.hero_max_hp
+        
+        # Reset hero position and velocity
+        self.hero.np.setPos(self.hero_start_pos)
+        self.hero.node.setLinearVelocity(Vec3(0, 0, 0))
+        self.hero.node.setAngularVelocity(Vec3(0, 0, 0))
+        
+        # Announce respawn
+        self._set_status(f"Hero respawns! Power +{stat_bonus}, HP {self.hero_max_hp} (Respawn #{self.hero_respawn_count})")
+        
+        # Send respawn notification to network if needed
+        self._queue_message({
+            "type": "hero_respawn",
+            "respawn_count": self.hero_respawn_count,
+            "hero_level": self.hero_level,
+            "hero_mob_kills": self.hero_mob_kills,
+            "hero_hp": self.hero_hp,
+        })
+        
+        # Update HUD
+        self._update_hud()
 
     def _entity_distance(self, source_np, target_np) -> float:
         dx = source_np.getX() - target_np.getX()
@@ -4010,7 +4131,7 @@ class Game(ShowBase):
             if self.hero:
                 self._play_hit_vfx(self.hero.np, damage)
             if self.hero_hp == 0:
-                self._declare_winner("boss", announce=True)
+                self._on_hero_death()
             return
 
         if self.player_id == 1 and target == "boss":
