@@ -177,6 +177,8 @@ class Game(ShowBase):
         self.sfx_hero_jump = self.loader.loadSfx(os.path.join("assets", "music", "hero-jump.mp3"))
         self.sfx_hero_big_attack = self.loader.loadSfx(os.path.join("assets", "music", "hero-jump-attack.mp3"))
         self.sfx_hero_death = self.loader.loadSfx(os.path.join("assets", "music", "hero-death.mp3"))
+        self.sfx_kayou_attack = self.loader.loadSfx(os.path.join("assets", "music", "kayou-attack.mp3"))
+        self.sfx_mob_attack = self.loader.loadSfx(os.path.join("assets", "music", "mob-attack.mp3"))
 
         self.all_sfx = [
             self.sfx_hero_run,
@@ -184,7 +186,9 @@ class Game(ShowBase):
             self.sfx_hero_attack_miss,
             self.sfx_hero_jump,
             self.sfx_hero_big_attack,
-            self.sfx_hero_death
+            self.sfx_hero_death,
+            self.sfx_kayou_attack,
+            self.sfx_mob_attack,
         ]
         for sfx in self.all_sfx:
             sfx.setVolume(self.sfx_volume)
@@ -307,6 +311,24 @@ class Game(ShowBase):
         self.taskMgr.add(self._task_update, "update_task")
         self.taskMgr.add(self._task_websocket, "websocket_task")
         self.taskMgr.add(self._task_boss_editor_drag, "boss_editor_drag")
+
+    def destroy(self):
+        """Explicitly stop all tasks and audio before destruction."""
+        if hasattr(self, 'bg_music'):
+            self.bg_music.stop()
+        if hasattr(self, 'all_sfx'):
+            for sfx in self.all_sfx:
+                if sfx:
+                    sfx.stop()
+        
+        self.taskMgr.remove("physics_task")
+        self.taskMgr.remove("update_task")
+        self.taskMgr.remove("websocket_task")
+        self.taskMgr.remove("boss_editor_drag")
+        
+        # Ensure we stop the task manager loop if it hasn't stopped yet
+        self.taskMgr.stop()
+        super().destroy()
 
     def _setup_lighting(self):
         self.render.clearLight()
@@ -2310,7 +2332,7 @@ class Game(ShowBase):
         palette = self.ui_palette
         self.options_root = self._make_fantasy_panel(
             self.ui_root,
-            (-0.45, 0.45, -0.28, 0.32),
+            (-0.45, 0.45, -0.55, 0.32),
             (0, 0, 0),
             name="options_panel"
         )
@@ -2369,12 +2391,113 @@ class Game(ShowBase):
             thumb_frameColor=palette["gold"]
         )
 
+        self.controls_btn = DirectButton(
+            parent=self.options_root,
+            text="CONTROLS",
+            scale=0.05,
+            pos=(0, 0, -0.23),
+            command=self._show_controls,
+            relief=DGG.FLAT,
+            frameColor=palette["gold_dim"],
+            text_fg=palette["text"],
+            text_font=self.ui_font,
+            pad=(0.4, 0.2)
+        )
+
+        self.back_to_menu_btn = DirectButton(
+            parent=self.options_root,
+            text="QUIT",
+            scale=0.05,
+            pos=(0, 0, -0.38),
+            command=self._back_to_menu,
+            relief=DGG.FLAT,
+            frameColor=palette["gold_dim"],
+            text_fg=palette["text"],
+            text_font=self.ui_font,
+            pad=(0.4, 0.2)
+        )
+
+        # Controls Display Panel
+        self.controls_display_root = self._make_fantasy_panel(
+            self.ui_root,
+            (-0.6, 0.6, -0.45, 0.45),
+            (0, 0, 0),
+            name="controls_display_panel"
+        )
+        self.controls_display_root.hide()
+
+        self.controls_display_title = self._make_ui_text(
+            text="CONTROLS",
+            pos=(0, 0.32),
+            align=TextNode.ACenter,
+            scale=0.08,
+            fg=palette["gold"],
+            shadow=(0, 0, 0, 0.8),
+            parent=self.controls_display_root
+        )
+
+        self.controls_display_text = self._make_ui_text(
+            text="",
+            pos=(0, 0.15),
+            align=TextNode.ACenter,
+            scale=0.042,
+            fg=palette["text"],
+            mayChange=True,
+            parent=self.controls_display_root
+        )
+
+        self.controls_close_btn = DirectButton(
+            parent=self.controls_display_root,
+            text="CLOSE",
+            scale=0.05,
+            pos=(0, 0, -0.35),
+            command=self._hide_controls,
+            relief=DGG.FLAT,
+            frameColor=palette["gold_dim"],
+            text_fg=palette["text"],
+            text_font=self.ui_font,
+            pad=(0.4, 0.2)
+        )
+
+    def _show_controls(self):
+        role_text = "UNKNOWN ROLE"
+        if self.player_id == 0:
+            role_text = (
+                "HERO\n\n"
+                "D: Move right\n"
+                "Q: Move left\n"
+                "M: Map\n"
+                "Left click: Attack\n"
+                "Spacebar: Jump\n"
+                "P: Settings"
+            )
+        elif self.player_id == 1:
+            role_text = (
+                "BOSS\n\n"
+                "D: Move right\n"
+                "Q: Move left\n"
+                "M: Map\n"
+                "Left-click: Attack\n"
+                "E: Free camera to position monsters\n"
+                "T: Teleport"
+            )
+        self.controls_display_text.setText(role_text)
+        self.controls_display_root.show()
+
+    def _hide_controls(self):
+        self.controls_display_root.hide()
+
+    def _back_to_menu(self):
+        print("Returning to menu...")
+        self.taskMgr.stop()
+
     def _toggle_options_panel(self):
         if self.options_root.isHidden():
             self.options_root.show()
             self._set_status("Settings opened.")
         else:
             self.options_root.hide()
+            self._hide_controls()
 
     def _update_music_volume(self):
         self.music_volume = float(self.music_slider['value'])
@@ -4455,6 +4578,14 @@ class Game(ShowBase):
             return
 
         self._play_attack_vfx(attacker_np)
+
+        if isinstance(self.controlled_entity, int):
+            mob = self.local_mobs.get(self.controlled_entity)
+            if isinstance(mob, Kayou):
+                self.sfx_kayou_attack.play()
+            else:
+                self.sfx_mob_attack.play()
+
         self._apply_attack_lunge(attacker_np, 2.8 + combo_range_bonus * 3.5)
         
         if self.controlled_entity == "boss":
@@ -4782,6 +4913,11 @@ class Game(ShowBase):
             if now - last_hit >= AI_ATTACK_COOLDOWN:
                 self.ai_attack_clock[mob_id] = now
                 self._play_attack_vfx(mob.np)
+
+                if isinstance(mob, Kayou):
+                    self.sfx_kayou_attack.play()
+                else:
+                    self.sfx_mob_attack.play()
                 
                 # Check for combo to skip delay
                 is_combo = False
