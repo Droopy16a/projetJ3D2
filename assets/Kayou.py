@@ -53,8 +53,9 @@ class Kayou(DirectObject.DirectObject):
         self.np.setPos(start_pos)
         physics.attach(self.node, self.np)
 
-        index = GLOBAL_STATE.increase_mob_number()
-        self.np.setCollideMask(bit(index))
+        # Reserve a shared mob collision bit so kayous don't collide with the player
+        GLOBAL_STATE.increase_mob_number()
+        self.np.setCollideMask(BitMask32.bit(30))
 
         self.actor = Actor(self.config.kayou_model)
         self.actor.reparentTo(self.np)

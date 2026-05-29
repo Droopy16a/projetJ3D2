@@ -58,8 +58,9 @@ class Boss(DirectObject.DirectObject):
         self.np.setPos(start_pos)
         physics.attach(self.node, self.np)
 
-        index = GLOBAL_STATE.increase_mob_number()
-        self.np.setCollideMask(bit(index))
+        # Reserve a shared mob collision bit so bosses don't collide with the player
+        GLOBAL_STATE.increase_mob_number()
+        self.np.setCollideMask(BitMask32.bit(30))
 
         self.actor = Actor(self.MODEL_PATH)
         self.actor.setHpr(-90, 0, 0)

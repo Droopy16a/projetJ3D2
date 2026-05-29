@@ -6,6 +6,7 @@ from panda3d.core import (
     Vec3,
     TransformState, 
     LineSegs,
+    BitMask32,
 )
 from direct.actor.Actor import Actor
 from panda3d.bullet import (
@@ -42,6 +43,11 @@ class Character(DirectObject.DirectObject):
         self.actor.reparentTo(self.np)
 
         physics.attach(self.node, self.np)
+
+        # Exclude the shared mob collision bit so the hero won't physically collide with mobs/kayous/bosses
+        mask = BitMask32.allOn()
+        mask.clearBit(30)
+        self.np.setCollideMask(mask)
 
         self._anim_names = set(self.actor.getAnimNames())
         self.IDLE_ANIM = 'Idle' if 'Idle' in self._anim_names else None
